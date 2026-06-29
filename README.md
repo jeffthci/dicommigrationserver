@@ -93,10 +93,23 @@ Both are read **live** by the orchestrator: change them in the dashboard's throt
 
 ## Install as a Windows service
 
-Use the installer script from an **elevated** PowerShell prompt. It publishes the app, writes config, **creates and preconfigures the SQLite database with no manual steps**, then registers and starts the service:
+The target server needs **neither the .NET SDK nor the .NET runtime** — you ship a self-contained build. There are two steps: build the package on a machine that has the SDK, then install it on the server.
+
+### 1. Build the package (on a machine with the .NET SDK)
+
+From the repo's `installer` folder:
 
 ```powershell
-cd installer
+.\build-package.ps1 -Zip
+```
+
+This publishes a self-contained build and assembles `dist\DicomMigration\` containing `app\` (the binaries), `install.ps1`, and `uninstall.ps1` — plus `dist\DicomMigration.zip`.
+
+### 2. Install on the target server (elevated PowerShell)
+
+Copy the package folder (or the zip) to the server, extract it, then run:
+
+```powershell
 .\install.ps1 `
   -LocalAe MIGRATE `
   -SourceAe SRC_PACS -SourceHost 10.0.0.10 -SourcePort 104 `
@@ -104,10 +117,10 @@ cd installer
   -Port 5080
 ```
 
-What it does:
+What `install.ps1` does:
 
-1. Stops/removes any existing service instance (safe to re-run for upgrades).
-2. `dotnet publish` (self-contained by default, so the target needs no .NET runtime) to `C:\Services\DicomMigration`.
+1. Stops/removes any existing service instance (waits for the process to exit and the SCM to drop it, so re-running is a safe in-place upgrade).
+2. Installs the binaries from the bundled `app\` folder into `C:\Services\DicomMigration` (no SDK/build on the server). If no payload is present but the SDK + source are, it falls back to `dotnet publish` — handy for a dev-box install.
 3. Writes `appsettings.Production.json` (UTF-8, no BOM) from the parameters.
 4. Runs `DicomMigration.exe init-db` — creates the schema **and seeds the `settings` table** from that config.
 5. Registers the `DicomMigration` service (auto-start, restart-on-failure) and starts it.

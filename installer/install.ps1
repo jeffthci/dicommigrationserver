@@ -4,9 +4,15 @@
   the SQLite database with no user intervention.
 
 .DESCRIPTION
+  Designed to run on a target server that has NO .NET SDK and no source. It installs from
+  pre-published, self-contained binaries shipped alongside this script in an "app" folder
+  (produced by build-package.ps1). Building from source is only attempted as a fallback when
+  the SDK and project are present (dev-box convenience).
+
   Steps performed:
     1. Stops and removes any existing instance of the service.
-    2. Publishes the app to the install directory (or reuses an existing publish).
+    2. Stages the application binaries into the install directory (from the bundled payload,
+       or by publishing from source if an SDK + project are available).
     3. Writes appsettings.Production.json (UTF-8, no BOM) with the supplied DICOM config.
     4. Runs "DicomMigration.exe init-db" to create the schema and seed the settings table.
     5. Registers the Windows service (auto-start) and starts it.
@@ -15,6 +21,7 @@
   runs unattended. Re-running it performs an in-place upgrade.
 
 .EXAMPLE
+  # On the target server, after copying the build-package.ps1 output here:
   .\install.ps1 -SourceHost 10.0.0.10 -SourceAe SRC_PACS -DestHost 10.0.0.20 -DestAe DST_PACS
 #>
 
@@ -40,6 +47,11 @@ param(
     [ValidateSet("Study","Series","Instance")]
     [string] $VerifyLevel         = "Study",
 
+    # Folder of pre-published binaries to install (contains DicomMigration.exe). Defaults to
+    # an "app" folder next to this script. When present, no .NET SDK is needed on this server.
+    [string] $PayloadDir,
+
+    # Fallback build-from-source options (only used when no payload is found and an SDK exists).
     [string] $ProjectPath,
     [bool]   $SelfContained       = $true,
     [switch] $SkipPublish
@@ -96,17 +108,37 @@ if ($existing) {
     }
 }
 
-# --- 2. Publish --------------------------------------------------------------------------
+# --- 2. Stage application binaries -------------------------------------------------------
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-if (-not $SkipPublish) {
-    Write-Step ("Publishing " + $ProjectPath + " ...")
+
+# Prefer a pre-published payload shipped next to this script (an "app" folder).
+if (-not $PayloadDir) {
+    $candidate = Join-Path $scriptDir "app"
+    if (Test-Path (Join-Path $candidate "DicomMigration.exe")) { $PayloadDir = $candidate }
+}
+
+if ($PayloadDir) {
+    if (-not (Test-Path (Join-Path $PayloadDir "DicomMigration.exe"))) {
+        throw "Payload directory '$PayloadDir' does not contain DicomMigration.exe."
+    }
+    Write-Step ("Installing published files from " + $PayloadDir + " ...")
+    # /E recurse; no /MIR so an existing data/ and logs/ (and the DB) are preserved on upgrade.
+    & robocopy $PayloadDir $InstallDir /E /NFL /NDL /NJH /NJS /NP | Out-Null
+    if ($LASTEXITCODE -ge 8) { throw "Copy of published files failed (robocopy exit $LASTEXITCODE)." }
+}
+elseif (-not $SkipPublish -and (Test-Path $ProjectPath) -and (Get-Command dotnet -ErrorAction SilentlyContinue)) {
+    Write-Step ("No payload found; publishing from source " + $ProjectPath + " ...")
     $scArg = "false"
     if ($SelfContained) { $scArg = "true" }
     & dotnet publish $ProjectPath -c Release -r win-x64 --self-contained $scArg -o $InstallDir
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE" }
-} else {
-    Write-Step "Skipping publish (using existing files in install directory)."
 }
+else {
+    throw ("No application binaries to install. This server has no .NET SDK and no published " +
+        "payload was found next to install.ps1. On a machine WITH the .NET SDK, run " +
+        "build-package.ps1, copy the resulting package folder (or zip) here, and re-run install.ps1.")
+}
+
 if (-not (Test-Path $exePath)) { throw "Expected executable not found: $exePath" }
 
 New-Item -ItemType Directory -Force -Path (Join-Path $InstallDir "data") | Out-Null
