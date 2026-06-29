@@ -3,9 +3,11 @@ bin/
 obj/
 *.user
 
-## Deployment package output (build-package.ps1)
+## Deployment package output (build-package.ps1 / build-msi.ps1)
 dist/
 *.zip
+*.msi
+*.wixpdb
 
 ## Runtime artifacts
 ## NB: do NOT use a bare "data/" rule -- Git is case-insensitive on Windows and it would

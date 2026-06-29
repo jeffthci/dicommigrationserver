@@ -99,9 +99,47 @@ Both are read **live** by the orchestrator: change them in the dashboard's throt
 
 ## Install as a Windows service
 
-The target server needs **neither the .NET SDK nor the .NET runtime** — you ship a self-contained build. There are two steps: build the package on a machine that has the SDK, then install it on the server.
+The target server needs **neither the .NET SDK nor the .NET runtime** — you ship a self-contained build. Two deployment options:
 
-### 1. Build the package (on a machine with the .NET SDK)
+- **MSI** (below) — best for rolling out to multiple machines (double-click, `msiexec /qn`, GPO/SCCM).
+- **Script package** ([further down](#script-package-alternative)) — a zipped folder + `install.ps1`.
+
+### MSI (recommended for fleet deployment)
+
+**Build the MSI once** on a machine with the .NET SDK and the WiX v5 toolset:
+
+```powershell
+# one-time WiX setup (MIT-licensed v5; v6/v7 require a paid maintenance-fee EULA)
+dotnet tool install --global wix --version 5.0.2
+wix extension add -g WixToolset.Util.wixext/5.0.2
+
+cd installer
+.\build-msi.ps1 -Version 1.0.0.0     # -> dist\DicomMigration.msi
+```
+
+**Deploy `dist\DicomMigration.msi`** to any number of machines:
+
+```powershell
+# interactive
+DicomMigration.msi
+
+# silent, default port 5080
+msiexec /i DicomMigration.msi /qn
+
+# silent, custom dashboard port
+msiexec /i DicomMigration.msi /qn WEBPORT=5090
+
+# uninstall
+msiexec /x DicomMigration.msi /qn
+```
+
+The MSI installs to `C:\Program Files\DICOM Migration Server`, registers the `DicomMigration` service (auto-start, LocalSystem, restart-on-failure), and starts it. On first start the app creates the SQLite schema and seeds settings. Then browse to `http://localhost:<port>/` and set the source/destination/local **AE titles, hosts, and ports from the dashboard**. Re-running a newer MSI performs a clean in-place upgrade (bump `-Version`); the database under the install folder is preserved.
+
+### Script package (alternative)
+
+Prefer a plain zip + script? Build it on a machine with the SDK:
+
+#### 1. Build the package (on a machine with the .NET SDK)
 
 From the repo's `installer` folder:
 
@@ -111,7 +149,7 @@ From the repo's `installer` folder:
 
 This publishes a self-contained build and assembles `dist\DicomMigration\` containing `app\` (the binaries), `install.ps1`, and `uninstall.ps1` — plus `dist\DicomMigration.zip`.
 
-### 2. Install on the target server (elevated PowerShell)
+#### 2. Install on the target server (elevated PowerShell)
 
 Copy the package folder (or the zip) to the server, extract it, then run:
 

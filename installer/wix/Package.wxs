@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  WiX v5 source for the DICOM Migration Server MSI.
+
+  Installs the self-contained build to Program Files and registers the Windows service
+  natively (ServiceInstall/ServiceControl). The service starts on install; the app creates
+  the SQLite schema and seeds the settings table from appsettings on first run. Configure
+  the real source/destination AE titles, hosts, and ports afterward from the dashboard.
+
+  Built by build-msi.ps1, which supplies the PublishDir and Version preprocessor variables.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+
+  <Package Name="DICOM Migration Server"
+           Manufacturer="THC Imaging"
+           Version="$(var.Version)"
+           UpgradeCode="4D1B7C2E-8F3A-4B6D-9E0C-1A2B3C4D5E6F"
+           Scope="perMachine"
+           Compressed="yes">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- Web dashboard port. Override at install: msiexec /i DicomMigration.msi WEBPORT=5090 -->
+    <Property Id="WEBPORT" Value="5080" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="DICOM Migration Server" />
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="DICOM Migration Server" Level="1">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentRef Id="MainExecutable" />
+    </Feature>
+
+    <!-- Harvest every published file. The main exe is staged separately (ExeDir) and is not
+         present in PublishDir, so it is not double-included here. -->
+    <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
+      <Files Include="$(var.PublishDir)\**" />
+    </ComponentGroup>
+
+    <Component Id="MainExecutable" Directory="INSTALLFOLDER" Guid="*">
+      <File Id="DicomMigrationExe" Source="$(var.ExeDir)\DicomMigration.exe" KeyPath="yes" />
+
+      <ServiceInstall Id="ServiceInstall"
+                      Name="DicomMigration"
+                      DisplayName="DICOM Migration Server"
+                      Description="Migrates DICOM studies between PACS via C-MOVE, with a web dashboard."
+                      Type="ownProcess"
+                      Start="auto"
+                      ErrorControl="normal"
+                      Account="LocalSystem"
+                      Arguments="--urls=http://localhost:[WEBPORT]"
+                      Vital="yes" />
+
+      <!-- Restart on failure: three restarts, 5s apart, reset the counter after a day. -->
+      <util:ServiceConfig ServiceName="DicomMigration"
+                          FirstFailureActionType="restart"
+                          SecondFailureActionType="restart"
+                          ThirdFailureActionType="restart"
+                          RestartServiceDelayInSeconds="5"
+                          ResetPeriodInDays="1" />
+
+      <ServiceControl Id="ServiceControl"
+                      Name="DicomMigration"
+                      Start="install"
+                      Stop="both"
+                      Remove="uninstall"
+                      Wait="yes" />
+    </Component>
+  </Package>
+</Wix>
