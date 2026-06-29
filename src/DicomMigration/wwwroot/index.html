@@ -57,6 +57,34 @@
     <div class="throttle-hint">Changes apply live to the running migration. Increase the delay or lower parallelism if the source PACS is slow to push.</div>
   </section>
 
+  <section class="connections">
+    <h2>Connections</h2>
+    <div class="conn-grid">
+      <div class="conn-group">
+        <div class="conn-title">Migration server (this app)</div>
+        <label>AE Title <input id="c-local-ae" maxlength="16" /></label>
+        <div class="conn-note">Calling AE for C-FIND / C-MOVE. This server initiates associations, so it has no listening port.</div>
+      </div>
+      <div class="conn-group">
+        <div class="conn-title">Source PACS</div>
+        <label>AE Title <input id="c-src-ae" maxlength="16" /></label>
+        <label>Host <input id="c-src-host" /></label>
+        <label>Port <input id="c-src-port" type="number" min="1" max="65535" /></label>
+      </div>
+      <div class="conn-group">
+        <div class="conn-title">Destination PACS</div>
+        <label>AE Title <input id="c-dst-ae" maxlength="16" /></label>
+        <label>Host <input id="c-dst-host" /></label>
+        <label>Port <input id="c-dst-port" type="number" min="1" max="65535" /></label>
+      </div>
+    </div>
+    <div class="conn-actions">
+      <button id="c-save">Save connections</button>
+      <span id="c-saved" class="saved-msg"></span>
+      <span class="conn-warn">Avoid changing these while a migration is running.</span>
+    </div>
+  </section>
+
   <section class="progress">
     <div class="progress-head">
       <span id="phase-label">idle</span>

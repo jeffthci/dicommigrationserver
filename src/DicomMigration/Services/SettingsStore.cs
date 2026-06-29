@@ -30,6 +30,18 @@ public sealed class SettingsStore
     {
         "Source.UseTls", "Destination.UseTls", "Inventory.FetchSeriesCounts"
     };
+    private static readonly HashSet<string> PortKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Source.Port", "Destination.Port"
+    };
+    private static readonly HashSet<string> AeTitleKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "LocalAeTitle", "Source.AeTitle", "Destination.AeTitle"
+    };
+    private static readonly HashSet<string> HostKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Source.Host", "Destination.Host"
+    };
 
     public SettingsStore(Database db, IOptions<DicomSettings> defaults, ILogger<SettingsStore> logger)
     {
@@ -166,10 +178,32 @@ public sealed class SettingsStore
             if (!editable.Contains(key)) continue;
             var value = rawValue?.Trim() ?? "";
 
-            if (IntKeys.Contains(key) && !int.TryParse(value, out _))
-                throw new ArgumentException($"Setting '{key}' must be an integer (got '{value}').");
-            if (BoolKeys.Contains(key) && !bool.TryParse(value, out _))
-                throw new ArgumentException($"Setting '{key}' must be true/false (got '{value}').");
+            if (IntKeys.Contains(key))
+            {
+                if (!int.TryParse(value, out var n))
+                    throw new ArgumentException($"Setting '{key}' must be an integer (got '{value}').");
+                if (PortKeys.Contains(key) && (n < 1 || n > 65535))
+                    throw new ArgumentException($"Setting '{key}' must be a port between 1 and 65535 (got {n}).");
+            }
+            else if (BoolKeys.Contains(key))
+            {
+                if (!bool.TryParse(value, out _))
+                    throw new ArgumentException($"Setting '{key}' must be true/false (got '{value}').");
+            }
+            else if (AeTitleKeys.Contains(key))
+            {
+                if (value.Length == 0)
+                    throw new ArgumentException($"Setting '{key}' (AE Title) is required.");
+                if (value.Length > 16)
+                    throw new ArgumentException($"Setting '{key}' (AE Title) must be 16 characters or fewer.");
+                if (value.Contains('\\'))
+                    throw new ArgumentException($"Setting '{key}' (AE Title) may not contain a backslash.");
+            }
+            else if (HostKeys.Contains(key))
+            {
+                if (value.Length == 0)
+                    throw new ArgumentException($"Setting '{key}' (host) is required.");
+            }
 
             await conn.ExecuteAsync(
                 "INSERT INTO settings (key, value, updated_at) VALUES (@key, @value, @now) " +

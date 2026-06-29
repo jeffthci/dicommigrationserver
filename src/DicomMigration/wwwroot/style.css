@@ -89,6 +89,32 @@ button.warn { border-color: var(--warn); color: var(--warn); }
 .throttle-hint { font-size: 11px; color: var(--muted); margin-top: 8px; }
 .saved-msg { font-size: 12px; color: var(--ok); align-self: center; }
 
+.connections { padding-top: 0; }
+.conn-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.conn-group {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.conn-title { font-size: 13px; font-weight: 600; color: var(--accent); margin-bottom: 2px; }
+.conn-group label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); }
+.conn-group input {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 9px;
+  font-size: 13px;
+}
+.conn-note { font-size: 11px; color: var(--muted); margin-top: auto; }
+.conn-actions { display: flex; gap: 14px; align-items: center; margin-top: 12px; }
+.conn-warn { font-size: 11px; color: var(--warn); }
+@media (max-width: 760px) { .conn-grid { grid-template-columns: 1fr; } }
+
 .progress-head { display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 13px; }
 #phase-label { text-transform: uppercase; letter-spacing: 0.05em; color: var(--accent); }
 .progress-track { height: 10px; background: var(--panel); border-radius: 5px; overflow: hidden; }

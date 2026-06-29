@@ -32,8 +32,8 @@ async function refreshStatus() {
   $("#progress-fill").style.width = pct(s.processed, s.total) + "%";
   $("#current-item").textContent = s.currentItem ? "current: " + s.currentItem : "";
 
-  // Disable phase buttons while busy.
-  ["btn-inventory", "btn-migrate", "btn-verify", "btn-retry"].forEach((id) => { $("#" + id).disabled = data.busy; });
+  // Disable phase buttons while busy. Connections must not change mid-run either.
+  ["btn-inventory", "btn-migrate", "btn-verify", "btn-retry", "c-save"].forEach((id) => { $("#" + id).disabled = data.busy; });
 
   renderSummary(data.counts);
   renderCounts(data.counts);
@@ -122,14 +122,41 @@ async function loadConfig() {
   } catch { /* ignore */ }
 }
 
-// Load current throttle/verify settings into the form (once, so we don't clobber edits).
+// Load current settings into the throttle + connection forms (once, so we don't clobber edits).
 async function loadSettings() {
   try {
     const s = await api("/settings");
     $("#t-parallel").value = s.move.maxParallelMoves;
     $("#t-delay").value = s.move.delayBetweenMovesMs;
     $("#t-verify").value = s.verify.level;
+
+    $("#c-local-ae").value = s.localAeTitle;
+    $("#c-src-ae").value = s.source.aeTitle;
+    $("#c-src-host").value = s.source.host;
+    $("#c-src-port").value = s.source.port;
+    $("#c-dst-ae").value = s.destination.aeTitle;
+    $("#c-dst-host").value = s.destination.host;
+    $("#c-dst-port").value = s.destination.port;
   } catch { /* ignore */ }
+}
+
+async function saveConnections() {
+  const body = {
+    "LocalAeTitle": $("#c-local-ae").value.trim(),
+    "Source.AeTitle": $("#c-src-ae").value.trim(),
+    "Source.Host": $("#c-src-host").value.trim(),
+    "Source.Port": String($("#c-src-port").value || ""),
+    "Destination.AeTitle": $("#c-dst-ae").value.trim(),
+    "Destination.Host": $("#c-dst-host").value.trim(),
+    "Destination.Port": String($("#c-dst-port").value || ""),
+  };
+  try {
+    await api("/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    flashSaved("Saved", "#c-saved");
+    loadConfig();
+  } catch (e) {
+    flashSaved("Error: " + e.message, "#c-saved");
+  }
 }
 
 async function saveSettings() {
@@ -140,17 +167,17 @@ async function saveSettings() {
   };
   try {
     await api("/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    flashSaved("Saved");
+    flashSaved("Saved", "#t-saved");
     loadConfig();
   } catch (e) {
-    flashSaved("Error: " + e.message);
+    flashSaved("Error: " + e.message, "#t-saved");
   }
 }
 
-function flashSaved(msg) {
-  const el = $("#t-saved");
+function flashSaved(msg, sel) {
+  const el = $(sel || "#t-saved");
   el.textContent = msg;
-  setTimeout(() => { el.textContent = ""; }, 2500);
+  setTimeout(() => { el.textContent = ""; }, 3000);
 }
 
 // Wire up controls.
@@ -160,6 +187,7 @@ $("#btn-cancel").addEventListener("click", () => api("/cancel", { method: "POST"
 $("#refresh").addEventListener("click", () => { refreshStudies(); refreshEvents(); });
 $("#status-filter").addEventListener("change", refreshStudies);
 $("#t-save").addEventListener("click", saveSettings);
+$("#c-save").addEventListener("click", saveConnections);
 
 // Initial load + polling.
 loadConfig();

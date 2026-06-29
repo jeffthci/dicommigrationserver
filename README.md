@@ -21,7 +21,13 @@ If the destination AE is not registered on the source, every C-MOVE returns a "M
 
 ## Configuration
 
-Operational configuration lives in the SQLite database (a `settings` table), not just in files. `appsettings.json` provides **bootstrap defaults**; on first run (or via the installer's `init-db` step) those values are seeded into the database, which then becomes the source of truth. Throttle and verify settings can be changed **live from the dashboard** (or `POST /api/settings`) without a restart — see [Throttling](#throttling-the-migration).
+Operational configuration lives in the SQLite database (a `settings` table), not just in files. `appsettings.json` provides **bootstrap defaults**; on first run (or via the installer's `init-db` step) those values are seeded into the database, which then becomes the source of truth.
+
+Everything can be edited **live from the dashboard** (or `POST /api/settings`) without a restart:
+- **Connections** panel — the migration server's AE Title, and the source/destination AE Title + Host + Port. (The server is a C-MOVE SCU and never listens, so it has no DICOM port of its own.) Avoid changing these mid-migration.
+- **Throttle** panel — parallelism, inter-move delay, and verify level (see [Throttling](#throttling-the-migration)).
+
+The only file-only settings are the dashboard `Urls` (web port) and the database path, which need a service restart.
 
 `appsettings.json` (defaults / bootstrap):
 
