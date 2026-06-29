@@ -1,0 +1,157 @@
+using Dapper;
+using DicomMigration.Models;
+
+namespace DicomMigration.Data;
+
+/// <summary>
+/// All persistence for the inventory and migration state. Every write stamps updated_at.
+/// </summary>
+public sealed class StudyRepository
+{
+    private readonly Database _db;
+
+    public StudyRepository(Database db) => _db = db;
+
+    private static string Now() => DateTime.UtcNow.ToString("o");
+
+    /// <summary>
+    /// Insert a freshly inventoried study, or refresh its source-side metadata if it already
+    /// exists. Existing migration status/counts are left untouched so re-running inventory is safe.
+    /// </summary>
+    public async Task UpsertInventoryAsync(StudyRecord s)
+    {
+        using var conn = _db.Open();
+        await conn.ExecuteAsync(
+            @"INSERT INTO studies
+                (study_instance_uid, patient_id, patient_name, study_date, study_description,
+                 accession_number, modalities, source_series_count, source_instance_count,
+                 status, inventoried_at, updated_at)
+              VALUES
+                (@StudyInstanceUid, @PatientId, @PatientName, @StudyDate, @StudyDescription,
+                 @AccessionNumber, @Modalities, @SourceSeriesCount, @SourceInstanceCount,
+                 'inventoried', @Now, @Now)
+              ON CONFLICT(study_instance_uid) DO UPDATE SET
+                 patient_id            = excluded.patient_id,
+                 patient_name          = excluded.patient_name,
+                 study_date            = excluded.study_date,
+                 study_description     = excluded.study_description,
+                 accession_number      = excluded.accession_number,
+                 modalities            = excluded.modalities,
+                 source_series_count   = excluded.source_series_count,
+                 source_instance_count = excluded.source_instance_count,
+                 updated_at            = excluded.updated_at;",
+            new
+            {
+                s.StudyInstanceUid, s.PatientId, s.PatientName, s.StudyDate, s.StudyDescription,
+                s.AccessionNumber, s.Modalities, s.SourceSeriesCount, s.SourceInstanceCount,
+                Now = Now()
+            });
+    }
+
+    public async Task<IReadOnlyList<StudyRecord>> GetByStatusAsync(string status, int? limit = null)
+    {
+        using var conn = _db.Open();
+        var sql = "SELECT * FROM studies WHERE status = @status ORDER BY study_date";
+        if (limit is > 0) sql += " LIMIT " + limit.Value;
+        var rows = await conn.QueryAsync<StudyRecord>(sql, new { status });
+        return rows.ToList();
+    }
+
+    public async Task<IReadOnlyList<StudyRecord>> GetPageAsync(string? status, int limit, int offset)
+    {
+        using var conn = _db.Open();
+        var sql = status is null
+            ? "SELECT * FROM studies ORDER BY updated_at DESC LIMIT @limit OFFSET @offset"
+            : "SELECT * FROM studies WHERE status = @status ORDER BY updated_at DESC LIMIT @limit OFFSET @offset";
+        var rows = await conn.QueryAsync<StudyRecord>(sql, new { status, limit, offset });
+        return rows.ToList();
+    }
+
+    public async Task<StudyRecord?> GetAsync(string studyInstanceUid)
+    {
+        using var conn = _db.Open();
+        return await conn.QuerySingleOrDefaultAsync<StudyRecord>(
+            "SELECT * FROM studies WHERE study_instance_uid = @studyInstanceUid",
+            new { studyInstanceUid });
+    }
+
+    /// <summary>Status counts for the dashboard summary.</summary>
+    public async Task<Dictionary<string, int>> GetStatusCountsAsync()
+    {
+        using var conn = _db.Open();
+        var rows = await conn.QueryAsync<(string status, int count)>(
+            "SELECT status, COUNT(*) AS count FROM studies GROUP BY status");
+        return rows.ToDictionary(r => r.status, r => r.count);
+    }
+
+    public async Task SetStatusAsync(string studyUid, string status, string? error = null)
+    {
+        using var conn = _db.Open();
+        await conn.ExecuteAsync(
+            "UPDATE studies SET status = @status, last_error = @error, updated_at = @now WHERE study_instance_uid = @studyUid",
+            new { studyUid, status, error, now = Now() });
+    }
+
+    public async Task RecordMoveAsync(string studyUid, string status, int completed, int failed, int warnings, string? error)
+    {
+        using var conn = _db.Open();
+        await conn.ExecuteAsync(
+            @"UPDATE studies SET
+                status            = @status,
+                move_completed    = @completed,
+                move_failed_count = @failed,
+                move_warnings     = @warnings,
+                last_error        = @error,
+                attempts          = attempts + 1,
+                moved_at          = @now,
+                updated_at        = @now
+              WHERE study_instance_uid = @studyUid;",
+            new { studyUid, status, completed, failed, warnings, error, now = Now() });
+    }
+
+    public async Task RecordVerifyAsync(string studyUid, string status, int? destSeries, int? destInstances, string? error)
+    {
+        using var conn = _db.Open();
+        await conn.ExecuteAsync(
+            @"UPDATE studies SET
+                status             = @status,
+                dest_series_count  = @destSeries,
+                dest_instance_count = @destInstances,
+                last_error         = @error,
+                verified_at        = @now,
+                updated_at         = @now
+              WHERE study_instance_uid = @studyUid;",
+            new { studyUid, status, destSeries, destInstances, error, now = Now() });
+    }
+
+    /// <summary>
+    /// Zero the attempt counter for the given studies so a manual retry isn't blocked by
+    /// MaxAttempts. Called before re-running C-MOVE on previously failed studies.
+    /// </summary>
+    public async Task<int> ResetAttemptsAsync(IEnumerable<string> studyUids)
+    {
+        var ids = studyUids.ToList();
+        if (ids.Count == 0) return 0;
+        using var conn = _db.Open();
+        return await conn.ExecuteAsync(
+            "UPDATE studies SET attempts = 0, last_error = NULL, updated_at = @now WHERE study_instance_uid IN @ids",
+            new { ids, now = Now() });
+    }
+
+    public async Task LogEventAsync(string? studyUid, string level, string message)
+    {
+        using var conn = _db.Open();
+        await conn.ExecuteAsync(
+            "INSERT INTO event_log (study_instance_uid, level, message, created_at) VALUES (@studyUid, @level, @message, @now)",
+            new { studyUid, level, message, now = Now() });
+    }
+
+    public async Task<IReadOnlyList<dynamic>> GetRecentEventsAsync(int limit = 100)
+    {
+        using var conn = _db.Open();
+        var rows = await conn.QueryAsync(
+            "SELECT study_instance_uid, level, message, created_at FROM event_log ORDER BY id DESC LIMIT @limit",
+            new { limit });
+        return rows.ToList();
+    }
+}

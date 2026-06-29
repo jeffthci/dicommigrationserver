@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DICOM Migration Server</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>DICOM Migration Server</h1>
+    <div id="config" class="config"></div>
+  </header>
+
+  <section class="summary" id="summary">
+    <div class="stat stat-total" title="Total studies recorded in the inventory (all statuses)">
+      <div class="stat-n" id="stat-total">0</div>
+      <div class="stat-lbl">Studies Inventoried</div>
+    </div>
+    <div class="stat stat-moved" title="Studies whose C-MOVE completed (moved + verified)">
+      <div class="stat-n" id="stat-moved">0</div>
+      <div class="stat-lbl">Moved</div>
+      <div class="stat-sub" id="stat-moved-sub"></div>
+    </div>
+    <div class="stat stat-failed" title="Move failures, verify failures, and count mismatches">
+      <div class="stat-n" id="stat-failed">0</div>
+      <div class="stat-lbl">Failed / Mismatch</div>
+    </div>
+  </section>
+
+  <section class="phase-bar">
+    <button id="btn-inventory" data-phase="inventory">1. Inventory Source</button>
+    <button id="btn-migrate" data-phase="migrate">2. Migrate (C-MOVE)</button>
+    <button id="btn-verify" data-phase="verify">3. Verify</button>
+    <button id="btn-retry" data-phase="retry" class="warn">Retry Failed</button>
+    <button id="btn-cancel" class="danger">Cancel</button>
+  </section>
+
+  <section class="throttle">
+    <div class="throttle-row">
+      <label>Parallel moves
+        <input type="number" id="t-parallel" min="1" max="16" />
+      </label>
+      <label>Delay between moves (ms)
+        <input type="number" id="t-delay" min="0" step="100" />
+      </label>
+      <label>Verify level
+        <select id="t-verify">
+          <option value="Study">Study</option>
+          <option value="Series">Series</option>
+          <option value="Instance">Instance</option>
+        </select>
+      </label>
+      <button id="t-save">Save throttle</button>
+      <span id="t-saved" class="saved-msg"></span>
+    </div>
+    <div class="throttle-hint">Changes apply live to the running migration. Increase the delay or lower parallelism if the source PACS is slow to push.</div>
+  </section>
+
+  <section class="progress">
+    <div class="progress-head">
+      <span id="phase-label">idle</span>
+      <span id="progress-text"></span>
+    </div>
+    <div class="progress-track"><div id="progress-fill"></div></div>
+    <div id="current-item" class="current-item"></div>
+  </section>
+
+  <section class="counts" id="counts"></section>
+
+  <section class="table-wrap">
+    <div class="table-controls">
+      <label>Filter status:
+        <select id="status-filter">
+          <option value="">all</option>
+          <option value="inventoried">inventoried</option>
+          <option value="move_pending">move_pending</option>
+          <option value="moved">moved</option>
+          <option value="move_failed">move_failed</option>
+          <option value="verified">verified</option>
+          <option value="mismatch">mismatch</option>
+          <option value="verify_failed">verify_failed</option>
+        </select>
+      </label>
+      <button id="refresh">Refresh</button>
+    </div>
+    <table id="studies">
+      <thead>
+        <tr>
+          <th>Patient</th><th>Study Date</th><th>Accession</th><th>Modality</th>
+          <th>Src Inst</th><th>Dst Inst</th><th>Status</th><th>Attempts</th><th>Last Error</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section class="events">
+    <h2>Recent events</h2>
+    <ul id="event-list"></ul>
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html>

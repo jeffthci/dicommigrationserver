@@ -1,0 +1,18 @@
+## .NET
+bin/
+obj/
+*.user
+
+## Runtime artifacts
+## NB: do NOT use a bare "data/" rule -- Git is case-insensitive on Windows and it would
+## also ignore the source "Data/" folder. The *.db globs cover the SQLite files instead.
+logs/
+*.log
+*.db
+*.db-shm
+*.db-wal
+
+## IDE
+.vs/
+.idea/
+*.suo
