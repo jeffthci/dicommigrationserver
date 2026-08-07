@@ -113,7 +113,9 @@ button.warn { border-color: var(--warn); color: var(--warn); }
 .conn-note { font-size: 11px; color: var(--muted); margin-top: auto; }
 .conn-actions { display: flex; gap: 14px; align-items: center; margin-top: 12px; }
 
-.push-btn { font-size: 11px; padding: 3px 9px; }
+.row-actions { white-space: nowrap; }
+.push-btn, .verify-btn { font-size: 11px; padding: 3px 9px; }
+.verify-btn { margin-left: 5px; }
 
 .conn-test { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; align-items: flex-start; }
 .conn-test button { font-size: 11px; padding: 4px 10px; }

@@ -61,6 +61,8 @@ public sealed class MigrationOrchestrator
     public bool StartVerify() => TryStart("verify", VerifyBody);
     public bool StartMoveStudy(string studyInstanceUid) =>
         TryStart("move-study", ct => MoveStudyBody(studyInstanceUid, ct));
+    public bool StartVerifyStudy(string studyInstanceUid) =>
+        TryStart("verify-study", ct => VerifyStudyBody(studyInstanceUid, ct));
 
     /// <summary>
     /// Acquire the single-run gate synchronously; if free, set up state + cancellation and run the
@@ -201,6 +203,36 @@ public sealed class MigrationOrchestrator
         await MoveOneAsync(study, ct);
     }
 
+    /// <summary>
+    /// Re-check one study against the destination without moving anything. Read-only, so it is safe
+    /// to run repeatedly while waiting for an asynchronous destination to finish ingesting.
+    /// </summary>
+    private async Task VerifyStudyBody(string studyInstanceUid, CancellationToken ct)
+    {
+        var study = await _repo.GetAsync(studyInstanceUid)
+            ?? throw new InvalidOperationException($"Study {studyInstanceUid} is not in the inventory.");
+
+        var settings = _settings.Current;
+        var level = ParseLevel(settings.Verify.Level);
+
+        UpdateState(s => { s.Total = 1; s.CurrentItem = study.StudyInstanceUid; });
+
+        try
+        {
+            await VerifyOneAsync(study, settings, level, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            await _repo.RecordVerifyAsync(study.StudyInstanceUid, MigrationStatus.VerifyFailed, null, null, ex.Message);
+            await _repo.LogEventAsync(study.StudyInstanceUid, "error", $"Verify error: {ex.Message}");
+            UpdateState(s => { s.Processed++; s.Failed++; });
+        }
+    }
+
     // ---- Retry: re-move studies that previously failed -------------------------------------
 
     /// <summary>
@@ -276,18 +308,29 @@ public sealed class MigrationOrchestrator
     // ---- Phase 3: Verify -------------------------------------------------------------------
 
     /// <summary>
-    /// For every moved study, C-FIND the destination and compare counts at the configured level.
+    /// C-FIND the destination for each candidate study and compare counts at the configured level.
+    ///
+    /// Candidates are <c>moved</c> plus <c>mismatch</c> and <c>verify_failed</c>. Re-checking the
+    /// two failure states matters because a destination that ingests asynchronously reports a study
+    /// as missing until it finishes indexing, so verifying too soon marks studies mismatch even
+    /// though the data arrived. Verification is a read-only C-FIND, so re-running it is free —
+    /// whereas excluding these states forced a re-push to make a study verifiable again, which
+    /// re-transmitted patient data to correct what was only ever a bookkeeping error.
     /// </summary>
     private async Task VerifyBody(CancellationToken ct)
     {
         var settings = _settings.Current;
-        var moved = await _repo.GetByStatusAsync(MigrationStatus.Moved);
+
+        var candidates = new List<StudyRecord>();
+        foreach (var status in new[] { MigrationStatus.Moved, MigrationStatus.Mismatch, MigrationStatus.VerifyFailed })
+            candidates.AddRange(await _repo.GetByStatusAsync(status));
+
         var level = ParseLevel(settings.Verify.Level);
 
-        UpdateState(s => s.Total = moved.Count);
-        await _repo.LogEventAsync(null, "info", $"Verification started ({level}): {moved.Count} studies");
+        UpdateState(s => s.Total = candidates.Count);
+        await _repo.LogEventAsync(null, "info", $"Verification started ({level}): {candidates.Count} studies");
 
-        foreach (var study in moved)
+        foreach (var study in candidates)
         {
             ct.ThrowIfCancellationRequested();
             UpdateState(s => s.CurrentItem = study.StudyInstanceUid);

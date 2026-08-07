@@ -155,6 +155,13 @@ api.MapPost("/move-study", (MigrationOrchestrator orch, MoveStudyRequest req) =>
         ? Results.BadRequest(new { error = "studyInstanceUid is required." })
         : StartPhase(() => orch.StartMoveStudy(req.StudyInstanceUid.Trim())));
 
+// Re-check one study against the destination. Read-only (C-FIND), so it is the right tool when a
+// destination that ingests asynchronously has left a study marked mismatch.
+api.MapPost("/verify-study", (MigrationOrchestrator orch, MoveStudyRequest req) =>
+    string.IsNullOrWhiteSpace(req.StudyInstanceUid)
+        ? Results.BadRequest(new { error = "studyInstanceUid is required." })
+        : StartPhase(() => orch.StartVerifyStudy(req.StudyInstanceUid.Trim())));
+
 api.MapPost("/verify", (MigrationOrchestrator orch) => StartPhase(orch.StartVerify));
 
 api.MapPost("/cancel", (MigrationOrchestrator orch) =>

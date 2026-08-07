@@ -106,22 +106,27 @@ async function refreshStudies() {
       <td><span class="status ${r.status}">${r.status}</span></td>
       <td>${r.attempts}</td>
       <td>${esc(r.lastError)}</td>
-      <td><button class="push-btn" data-uid="${esc(r.studyInstanceUid)}">Push</button></td>`;
+      <td class="row-actions">
+        <button class="push-btn" data-uid="${esc(r.studyInstanceUid)}">Push</button>
+        <button class="verify-btn" data-uid="${esc(r.studyInstanceUid)}">Verify</button>
+      </td>`;
     tbody.appendChild(tr);
   }
   // Rows are rebuilt on every poll, so wire the buttons here rather than once at load.
   tbody.querySelectorAll(".push-btn").forEach((b) =>
-    b.addEventListener("click", () => pushStudy(b.dataset.uid, b)));
+    b.addEventListener("click", () => studyAction("/move-study", b.dataset.uid, b)));
+  tbody.querySelectorAll(".verify-btn").forEach((b) =>
+    b.addEventListener("click", () => studyAction("/verify-study", b.dataset.uid, b)));
 }
 
-// C-MOVE a single study on demand. Shares the phase gate with the bulk phases, so this
-// returns 409 while a migration is running rather than competing with it.
-async function pushStudy(uid, btn) {
+// Per-study push (C-MOVE) or re-verify (read-only C-FIND). Both share the phase gate with the
+// bulk phases, so they return 409 while a migration is running rather than competing with it.
+async function studyAction(path, uid, btn) {
   const label = btn.textContent;
   btn.disabled = true;
   btn.textContent = "...";
   try {
-    const r = await api("/move-study", {
+    const r = await api(path, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ studyInstanceUid: uid }),
