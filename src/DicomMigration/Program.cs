@@ -148,6 +148,13 @@ api.MapPost("/migrate", (MigrationOrchestrator orch) => StartPhase(orch.StartMig
 
 api.MapPost("/retry", (MigrationOrchestrator orch) => StartPhase(orch.StartRetry));
 
+// Push a single study on demand. The UID is taken from the body rather than the route because
+// DICOM UIDs are dot-separated and awkward to carry safely in a path segment.
+api.MapPost("/move-study", (MigrationOrchestrator orch, MoveStudyRequest req) =>
+    string.IsNullOrWhiteSpace(req.StudyInstanceUid)
+        ? Results.BadRequest(new { error = "studyInstanceUid is required." })
+        : StartPhase(() => orch.StartMoveStudy(req.StudyInstanceUid.Trim())));
+
 api.MapPost("/verify", (MigrationOrchestrator orch) => StartPhase(orch.StartVerify));
 
 api.MapPost("/cancel", (MigrationOrchestrator orch) =>

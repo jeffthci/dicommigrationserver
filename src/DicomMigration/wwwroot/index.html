@@ -54,7 +54,22 @@
       <button id="t-save">Save throttle</button>
       <span id="t-saved" class="saved-msg"></span>
     </div>
+    <div class="throttle-row">
+      <label>Inventory chunk (days)
+        <input type="number" id="t-chunk" min="0" step="1" />
+      </label>
+      <label>Delay between chunks (ms)
+        <input type="number" id="t-chunkdelay" min="0" step="100" />
+      </label>
+      <label>Inventory date from
+        <input type="date" id="i-from" />
+      </label>
+      <label>Inventory date to
+        <input type="date" id="i-to" />
+      </label>
+    </div>
     <div class="throttle-hint">Changes apply live to the running migration. Increase the delay or lower parallelism if the source PACS is slow to push.</div>
+    <div class="throttle-hint">Inventory chunking splits the date range into windows and queries one at a time, pausing between them &mdash; gentler on the source than one open-ended query. Chunk size 0 queries the whole range at once. Chunking needs both dates set; leave them blank to inventory the entire archive.</div>
   </section>
 
   <section class="connections">
@@ -124,7 +139,7 @@
       <thead>
         <tr>
           <th>Patient</th><th>Study Date</th><th>Accession</th><th>Modality</th>
-          <th>Src Inst</th><th>Dst Inst</th><th>Status</th><th>Attempts</th><th>Last Error</th>
+          <th>Src Inst</th><th>Dst Inst</th><th>Status</th><th>Attempts</th><th>Last Error</th><th>Push</th>
         </tr>
       </thead>
       <tbody></tbody>

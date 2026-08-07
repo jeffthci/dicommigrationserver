@@ -24,7 +24,8 @@ public sealed class SettingsStore
     {
         "Source.Port", "Destination.Port",
         "Move.MaxParallelMoves", "Move.AssociationTimeoutSeconds",
-        "Move.MoveTimeoutMinutes", "Move.MaxAttempts", "Move.DelayBetweenMovesMs"
+        "Move.MoveTimeoutMinutes", "Move.MaxAttempts", "Move.DelayBetweenMovesMs",
+        "Inventory.ChunkDays", "Inventory.DelayBetweenChunksMs"
     };
     private static readonly HashSet<string> BoolKeys = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -67,7 +68,9 @@ public sealed class SettingsStore
         ["Move.MaxAttempts"] = s.Move.MaxAttempts.ToString(),
         ["Move.DelayBetweenMovesMs"] = s.Move.DelayBetweenMovesMs.ToString(),
         ["Verify.Level"] = s.Verify.Level,
-        ["Inventory.FetchSeriesCounts"] = s.Inventory.FetchSeriesCounts.ToString()
+        ["Inventory.FetchSeriesCounts"] = s.Inventory.FetchSeriesCounts.ToString(),
+        ["Inventory.ChunkDays"] = s.Inventory.ChunkDays.ToString(),
+        ["Inventory.DelayBetweenChunksMs"] = s.Inventory.DelayBetweenChunksMs.ToString()
     };
 
     /// <summary>The set of keys that may be written through the API / installer.</summary>
@@ -158,7 +161,12 @@ public sealed class SettingsStore
                     DelayBetweenMovesMs = Math.Max(0, GetInt("Move.DelayBetweenMovesMs", d.Move.DelayBetweenMovesMs))
                 },
                 Verify = new VerifySettings { Level = GetString("Verify.Level", d.Verify.Level) },
-                Inventory = new InventorySettings { FetchSeriesCounts = GetBool("Inventory.FetchSeriesCounts", d.Inventory.FetchSeriesCounts) }
+                Inventory = new InventorySettings
+                {
+                    FetchSeriesCounts = GetBool("Inventory.FetchSeriesCounts", d.Inventory.FetchSeriesCounts),
+                    ChunkDays = GetInt("Inventory.ChunkDays", d.Inventory.ChunkDays),
+                    DelayBetweenChunksMs = GetInt("Inventory.DelayBetweenChunksMs", d.Inventory.DelayBetweenChunksMs)
+                }
             };
         }
     }

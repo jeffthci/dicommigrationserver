@@ -59,6 +59,8 @@ public sealed class MigrationOrchestrator
     public bool StartMigrate() => TryStart("migrate", MigrateBody);
     public bool StartRetry() => TryStart("retry", RetryBody);
     public bool StartVerify() => TryStart("verify", VerifyBody);
+    public bool StartMoveStudy(string studyInstanceUid) =>
+        TryStart("move-study", ct => MoveStudyBody(studyInstanceUid, ct));
 
     /// <summary>
     /// Acquire the single-run gate synchronously; if free, set up state + cancellation and run the
@@ -175,6 +177,28 @@ public sealed class MigrationOrchestrator
         await _repo.LogEventAsync(null, "info", $"Migration started: {pending.Count} studies to move");
         await MoveAllAsync(pending, ct);
         await _repo.LogEventAsync(null, "info", "Migration phase complete");
+    }
+
+    // ---- Single study: operator-initiated push ----------------------------------------------
+
+    /// <summary>
+    /// C-MOVE one study on demand, whatever its current status. Goes through the same phase gate
+    /// as the bulk phases so it cannot run concurrently with a migration and fight for the source's
+    /// association limit.
+    ///
+    /// The attempt counter is reset first: an explicit push is an operator decision and should not
+    /// be silently skipped because the study already burned through MaxAttempts.
+    /// </summary>
+    private async Task MoveStudyBody(string studyInstanceUid, CancellationToken ct)
+    {
+        var study = await _repo.GetAsync(studyInstanceUid)
+            ?? throw new InvalidOperationException($"Study {studyInstanceUid} is not in the inventory.");
+
+        UpdateState(s => s.Total = 1);
+        await _repo.ResetAttemptsAsync(new[] { study.StudyInstanceUid });
+        await _repo.LogEventAsync(study.StudyInstanceUid, "info", "Manual push started");
+
+        await MoveOneAsync(study, ct);
     }
 
     // ---- Retry: re-move studies that previously failed -------------------------------------

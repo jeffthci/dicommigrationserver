@@ -33,6 +33,43 @@ public sealed class DicomQueryService
         _logger = logger;
     }
 
+    /// <summary>
+    /// Holds the final (non-Pending) DIMSE status of a C-FIND so it can be inspected after the
+    /// association closes. Without this a refusal is indistinguishable from "no matches": the
+    /// response handler simply never fires with a dataset and the query looks like an empty
+    /// archive. A source PACS that has not authorized our AE for query/retrieve returns
+    /// 0xA700 Refused on every C-FIND while still accepting the association, so this is the
+    /// difference between a clear error and a silently empty inventory.
+    /// </summary>
+    private sealed class FinalStatus
+    {
+        public DicomStatus? Value;
+    }
+
+    /// <summary>
+    /// Throws if a C-FIND did not finish successfully. Cancel is treated as benign because it is
+    /// the caller's own doing; anything else is a real failure that must not be reported as
+    /// zero results.
+    /// </summary>
+    private static void EnsureFindSucceeded(FinalStatus final, DicomNode node, string operation)
+    {
+        var status = final.Value;
+
+        if (status is null)
+            throw new InvalidOperationException(
+                $"{operation} against {node.AeTitle}@{node.Host}:{node.Port} ended without a final response.");
+
+        if (status.State is DicomState.Success or DicomState.Cancel)
+            return;
+
+        var hint = status.Code == 0xa700
+            ? $" This usually means AE '{node.AeTitle}' has not authorized calling AE for query/retrieve (Verification/C-ECHO can still succeed)."
+            : string.Empty;
+
+        throw new InvalidOperationException(
+            $"{operation} refused by {node.AeTitle}@{node.Host}:{node.Port}: {status}.{hint}");
+    }
+
     private IDicomClient CreateClient(DicomNode node, DicomSettings settings)
     {
         var client = _clientFactory.Create(node.Host, node.Port, node.UseTls, settings.LocalAeTitle, node.AeTitle);
@@ -141,6 +178,42 @@ public sealed class DicomQueryService
     public async Task<IReadOnlyList<StudyRecord>> InventorySourceAsync(InventoryFilter filter, CancellationToken ct)
     {
         var settings = _settings.Current;
+        var chunks = DateChunker.Split(filter.StudyDateRange, settings.Inventory.ChunkDays);
+
+        if (chunks.Count <= 1)
+            return await InventoryChunkAsync(filter, filter.StudyDateRange, ct);
+
+        // Chunked: one short association per date window, paced by DelayBetweenChunksMs, so a
+        // large archive is walked in steps instead of held open in a single long query.
+        var all = new List<StudyRecord>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var delay = settings.Inventory.DelayBetweenChunksMs;
+
+        for (var i = 0; i < chunks.Count; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var chunk = await InventoryChunkAsync(filter, chunks[i], ct);
+
+            // A study dated on a chunk boundary can appear in two windows; keep the first.
+            foreach (var s in chunk)
+                if (seen.Add(s.StudyInstanceUid))
+                    all.Add(s);
+
+            _logger.LogInformation("Inventory chunk {N}/{Total} ({Range}): {Count} studies, {Running} total",
+                i + 1, chunks.Count, chunks[i], chunk.Count, all.Count);
+
+            if (delay > 0 && i < chunks.Count - 1)
+                await Task.Delay(delay, ct);
+        }
+
+        return all;
+    }
+
+    private async Task<IReadOnlyList<StudyRecord>> InventoryChunkAsync(
+        InventoryFilter filter, string? studyDateRange, CancellationToken ct)
+    {
+        var settings = _settings.Current;
         var results = new List<StudyRecord>();
 
         var request = new DicomCFindRequest(DicomQueryRetrieveLevel.Study);
@@ -148,7 +221,7 @@ public sealed class DicomQueryService
         ds.AddOrUpdate(DicomTag.StudyInstanceUID, "");
         ds.AddOrUpdate(DicomTag.PatientID, filter.PatientId ?? "");
         ds.AddOrUpdate(DicomTag.PatientName, "");
-        ds.AddOrUpdate(DicomTag.StudyDate, filter.StudyDateRange ?? "");
+        ds.AddOrUpdate(DicomTag.StudyDate, studyDateRange ?? "");
         ds.AddOrUpdate(DicomTag.StudyTime, "");
         ds.AddOrUpdate(DicomTag.StudyDescription, "");
         ds.AddOrUpdate(DicomTag.AccessionNumber, filter.AccessionNumber ?? "");
@@ -156,8 +229,12 @@ public sealed class DicomQueryService
         ds.AddOrUpdate(DicomTag.NumberOfStudyRelatedSeries, "");
         ds.AddOrUpdate(DicomTag.NumberOfStudyRelatedInstances, "");
 
+        var final = new FinalStatus();
         request.OnResponseReceived += (req, response) =>
         {
+            if (response.Status != DicomStatus.Pending)
+                final.Value = response.Status;
+
             if (response.Status != DicomStatus.Pending || response.Dataset is null)
                 return;
 
@@ -182,6 +259,7 @@ public sealed class DicomQueryService
         var client = CreateClient(settings.Source, settings);
         await client.AddRequestAsync(request);
         await client.SendAsync(ct);
+        EnsureFindSucceeded(final, settings.Source, "Inventory C-FIND");
 
         _logger.LogInformation("Inventory C-FIND returned {Count} studies from {Ae}", results.Count, settings.Source.AeTitle);
         return results;
@@ -203,8 +281,12 @@ public sealed class DicomQueryService
         request.Dataset.AddOrUpdate(DicomTag.NumberOfStudyRelatedSeries, "");
         request.Dataset.AddOrUpdate(DicomTag.NumberOfStudyRelatedInstances, "");
 
+        var final = new FinalStatus();
         request.OnResponseReceived += (req, response) =>
         {
+            if (response.Status != DicomStatus.Pending)
+                final.Value = response.Status;
+
             if (response.Status != DicomStatus.Pending || response.Dataset is null)
                 return;
             found = true;
@@ -215,6 +297,9 @@ public sealed class DicomQueryService
         var client = CreateClient(node, settings);
         await client.AddRequestAsync(request);
         await client.SendAsync(ct);
+        // Critical for verification: a refused query must not be reported as "study not found",
+        // which would look like a migration failure rather than a permissions problem.
+        EnsureFindSucceeded(final, node, "Verification C-FIND");
         return (found, series, instances);
     }
 
@@ -232,8 +317,12 @@ public sealed class DicomQueryService
         request.Dataset.AddOrUpdate(DicomTag.SeriesInstanceUID, "");
         request.Dataset.AddOrUpdate(DicomTag.SOPInstanceUID, "");
 
+        var final = new FinalStatus();
         request.OnResponseReceived += (req, response) =>
         {
+            if (response.Status != DicomStatus.Pending)
+                final.Value = response.Status;
+
             if (response.Status != DicomStatus.Pending || response.Dataset is null)
                 return;
             var sop = response.Dataset.GetSingleValueOrDefault(DicomTag.SOPInstanceUID, "");
@@ -244,6 +333,7 @@ public sealed class DicomQueryService
         var client = CreateClient(node, settings);
         await client.AddRequestAsync(request);
         await client.SendAsync(ct);
+        EnsureFindSucceeded(final, node, "Instance-count C-FIND");
         return sopUids.Count;
     }
 

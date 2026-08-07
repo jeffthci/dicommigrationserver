@@ -58,6 +58,18 @@ public sealed class InventorySettings
 {
     /// <summary>If true, follow each study with a SERIES-level C-FIND to record series counts.</summary>
     public bool FetchSeriesCounts { get; set; }
+
+    /// <summary>
+    /// Split the inventory into date windows of this many days, issuing one C-FIND per window
+    /// instead of a single query for the whole range. 0 disables chunking (one query).
+    /// Chunking keeps each association short and each result set small, which is gentler on a
+    /// source PACS than one open-ended query and lets a large archive be walked in steps.
+    /// Requires a study date range; without one there is nothing to split.
+    /// </summary>
+    public int ChunkDays { get; set; }
+
+    /// <summary>Pause between inventory chunks, to pace load on the source.</summary>
+    public int DelayBetweenChunksMs { get; set; }
 }
 
 public enum VerifyLevel

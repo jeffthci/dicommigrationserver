@@ -113,6 +113,8 @@ button.warn { border-color: var(--warn); color: var(--warn); }
 .conn-note { font-size: 11px; color: var(--muted); margin-top: auto; }
 .conn-actions { display: flex; gap: 14px; align-items: center; margin-top: 12px; }
 
+.push-btn { font-size: 11px; padding: 3px 9px; }
+
 .conn-test { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; align-items: flex-start; }
 .conn-test button { font-size: 11px; padding: 4px 10px; }
 /* Wrap long rejection messages instead of stretching the panel. */

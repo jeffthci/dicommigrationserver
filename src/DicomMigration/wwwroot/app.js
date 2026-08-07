@@ -14,10 +14,29 @@ async function api(path, opts) {
 
 async function postPhase(phase) {
   try {
-    const r = await api("/" + phase, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    const r = await api("/" + phase, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: phase === "inventory" ? JSON.stringify(inventoryFilter()) : "{}",
+    });
     if (r && r.error) alert(r.error);
   } catch (e) { alert(e.message); }
   refreshStatus();
+}
+
+// Build the InventoryFilter from the date inputs. <input type="date"> gives YYYY-MM-DD;
+// DICOM wants YYYYMMDD, and a range as "from-to". Either end alone is a valid open range.
+function inventoryFilter() {
+  const dcm = (v) => (v ? v.replaceAll("-", "") : "");
+  const from = dcm($("#i-from").value);
+  const to = dcm($("#i-to").value);
+
+  let range = null;
+  if (from && to) range = from + "-" + to;
+  else if (from) range = from + "-";
+  else if (to) range = "-" + to;
+
+  return range ? { studyDateRange: range } : {};
 }
 
 function pct(p, t) { return t > 0 ? Math.round((p / t) * 100) : 0; }
@@ -86,9 +105,36 @@ async function refreshStudies() {
       <td>${r.destInstanceCount ?? ""}</td>
       <td><span class="status ${r.status}">${r.status}</span></td>
       <td>${r.attempts}</td>
-      <td>${esc(r.lastError)}</td>`;
+      <td>${esc(r.lastError)}</td>
+      <td><button class="push-btn" data-uid="${esc(r.studyInstanceUid)}">Push</button></td>`;
     tbody.appendChild(tr);
   }
+  // Rows are rebuilt on every poll, so wire the buttons here rather than once at load.
+  tbody.querySelectorAll(".push-btn").forEach((b) =>
+    b.addEventListener("click", () => pushStudy(b.dataset.uid, b)));
+}
+
+// C-MOVE a single study on demand. Shares the phase gate with the bulk phases, so this
+// returns 409 while a migration is running rather than competing with it.
+async function pushStudy(uid, btn) {
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "...";
+  try {
+    const r = await api("/move-study", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ studyInstanceUid: uid }),
+    });
+    if (r && r.error) alert(r.error);
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+  refreshStatus();
+  refreshStudies();
 }
 
 async function refreshEvents() {
@@ -129,6 +175,8 @@ async function loadSettings() {
     $("#t-parallel").value = s.move.maxParallelMoves;
     $("#t-delay").value = s.move.delayBetweenMovesMs;
     $("#t-verify").value = s.verify.level;
+    $("#t-chunk").value = s.inventory.chunkDays;
+    $("#t-chunkdelay").value = s.inventory.delayBetweenChunksMs;
 
     $("#c-local-ae").value = s.localAeTitle;
     $("#c-src-ae").value = s.source.aeTitle;
@@ -197,6 +245,8 @@ async function saveSettings() {
     "Move.MaxParallelMoves": String($("#t-parallel").value || "1"),
     "Move.DelayBetweenMovesMs": String($("#t-delay").value || "0"),
     "Verify.Level": $("#t-verify").value,
+    "Inventory.ChunkDays": String($("#t-chunk").value || "0"),
+    "Inventory.DelayBetweenChunksMs": String($("#t-chunkdelay").value || "0"),
   };
   try {
     await api("/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });

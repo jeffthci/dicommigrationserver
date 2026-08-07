@@ -20,3 +20,6 @@ public sealed record EchoResult(bool Ok, string Message, long ElapsedMs)
 /// into the Connections form before they are saved.
 /// </summary>
 public sealed record TestConnectionRequest(string? Target, string? AeTitle, string? Host, int? Port);
+
+/// <summary>Body for POST /api/move-study — pushes one inventoried study on demand.</summary>
+public sealed record MoveStudyRequest(string? StudyInstanceUid);
