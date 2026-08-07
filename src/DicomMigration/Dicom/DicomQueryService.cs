@@ -13,6 +13,12 @@ namespace DicomMigration.Dicom;
 /// </summary>
 public sealed class DicomQueryService
 {
+    /// <summary>
+    /// Wall-clock ceiling for the dashboard's C-ECHO test. Deliberately short: this backs a
+    /// button an operator is watching, unlike a migration where a long association timeout is fine.
+    /// </summary>
+    private const int TestTimeoutSeconds = 15;
+
     private readonly IDicomClientFactory _clientFactory;
     private readonly SettingsStore _settings;
     private readonly ILogger<DicomQueryService> _logger;
@@ -33,6 +39,99 @@ public sealed class DicomQueryService
         client.ServiceOptions.RequestTimeout = TimeSpan.FromSeconds(settings.Move.AssociationTimeoutSeconds);
         client.NegotiateAsyncOps();
         return client;
+    }
+
+    /// <summary>
+    /// C-ECHO against an arbitrary node, used by the dashboard's connection test. The node is
+    /// passed in rather than read from settings so the dashboard can test edited-but-unsaved
+    /// values.
+    ///
+    /// A failed echo is an ordinary outcome, so connection/timeout/rejection errors are caught
+    /// and returned as <see cref="EchoResult"/> rather than thrown. Note that a successful echo
+    /// only proves the remote accepts Verification from this calling AE — PACS commonly authorize
+    /// C-FIND and C-MOVE separately, so this passing does not guarantee a migration will work.
+    /// </summary>
+    public async Task<EchoResult> EchoAsync(DicomNode node, CancellationToken ct)
+    {
+        var settings = _settings.Current;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
+        // Move.AssociationTimeoutSeconds bounds requests on an established association, not the
+        // TCP connect. Against an unroutable host the connect sits until the OS gives up (minutes),
+        // which is far too long for a button in the UI, so bound the whole test separately.
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(TestTimeoutSeconds));
+
+        try
+        {
+            var client = CreateClient(node, settings);
+
+            DicomStatus? status = null;
+            var request = new DicomCEchoRequest();
+            request.OnResponseReceived += (req, response) => status = response.Status;
+
+            await client.AddRequestAsync(request);
+
+            // Cancellation alone is not enough: fo-dicom cannot always abort a connect already
+            // in progress. Race the send against the deadline so the caller always gets a prompt
+            // answer, and observe the abandoned task's exception so it is not left unobserved.
+            var sendTask = client.SendAsync(timeoutCts.Token);
+            var finished = await Task.WhenAny(sendTask, Task.Delay(Timeout.Infinite, timeoutCts.Token));
+
+            if (finished != sendTask)
+            {
+                _ = sendTask.ContinueWith(t => _ = t.Exception, TaskScheduler.Default);
+                sw.Stop();
+
+                ct.ThrowIfCancellationRequested(); // caller cancelled, not our deadline
+
+                _logger.LogWarning("C-ECHO to {Ae}@{Host}:{Port} timed out after {Sec}s",
+                    node.AeTitle, node.Host, node.Port, TestTimeoutSeconds);
+                return EchoResult.Failure(
+                    $"Timed out after {TestTimeoutSeconds}s with no response from {node.Host}:{node.Port}. " +
+                    "Check the host and port, and that a firewall is not dropping the connection.",
+                    sw.ElapsedMilliseconds);
+            }
+
+            await sendTask;
+            sw.Stop();
+
+            if (status is null)
+            {
+                _logger.LogWarning("C-ECHO to {Ae}@{Host}:{Port} completed with no response",
+                    node.AeTitle, node.Host, node.Port);
+                return EchoResult.Failure("Association completed but no C-ECHO response was received.", sw.ElapsedMilliseconds);
+            }
+
+            if (status.State == DicomState.Success)
+            {
+                _logger.LogInformation("C-ECHO to {Ae}@{Host}:{Port} succeeded in {Ms}ms",
+                    node.AeTitle, node.Host, node.Port, sw.ElapsedMilliseconds);
+                return EchoResult.Success(sw.ElapsedMilliseconds);
+            }
+
+            _logger.LogWarning("C-ECHO to {Ae}@{Host}:{Port} returned {Status}",
+                node.AeTitle, node.Host, node.Port, status);
+            return EchoResult.Failure("Remote returned status: " + status, sw.ElapsedMilliseconds);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            sw.Stop();
+            _logger.LogWarning(ex, "C-ECHO to {Ae}@{Host}:{Port} failed",
+                node.AeTitle, node.Host, node.Port);
+
+            // Association rejection is the common, actionable failure: it usually means the
+            // remote does not know this calling AE Title, or does not accept it from our IP.
+            var detail = ex is DicomAssociationRejectedException rej
+                ? $"Association rejected by {node.AeTitle} (reason: {rej.RejectReason}, source: {rej.RejectSource}). Check that AE '{settings.LocalAeTitle}' and this server's IP are registered on the remote."
+                : ex.Message;
+
+            return EchoResult.Failure(detail, sw.ElapsedMilliseconds);
+        }
     }
 
     /// <summary>

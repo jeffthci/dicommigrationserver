@@ -70,12 +70,20 @@
         <label>AE Title <input id="c-src-ae" maxlength="16" /></label>
         <label>Host <input id="c-src-host" /></label>
         <label>Port <input id="c-src-port" type="number" min="1" max="65535" /></label>
+        <div class="conn-test">
+          <button id="c-src-test" class="test-btn">Test C-ECHO</button>
+          <span id="c-src-test-msg" class="test-msg"></span>
+        </div>
       </div>
       <div class="conn-group">
         <div class="conn-title">Destination PACS</div>
         <label>AE Title <input id="c-dst-ae" maxlength="16" /></label>
         <label>Host <input id="c-dst-host" /></label>
         <label>Port <input id="c-dst-port" type="number" min="1" max="65535" /></label>
+        <div class="conn-test">
+          <button id="c-dst-test" class="test-btn">Test C-ECHO</button>
+          <span id="c-dst-test-msg" class="test-msg"></span>
+        </div>
       </div>
     </div>
     <div class="conn-actions">

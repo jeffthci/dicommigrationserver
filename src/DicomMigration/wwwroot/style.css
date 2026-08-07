@@ -112,6 +112,13 @@ button.warn { border-color: var(--warn); color: var(--warn); }
 }
 .conn-note { font-size: 11px; color: var(--muted); margin-top: auto; }
 .conn-actions { display: flex; gap: 14px; align-items: center; margin-top: 12px; }
+
+.conn-test { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; align-items: flex-start; }
+.conn-test button { font-size: 11px; padding: 4px 10px; }
+/* Wrap long rejection messages instead of stretching the panel. */
+.test-msg { font-size: 11px; color: var(--muted); line-height: 1.4; overflow-wrap: anywhere; }
+.test-msg.test-ok  { color: var(--ok); }
+.test-msg.test-err { color: var(--err); }
 .conn-warn { font-size: 11px; color: var(--warn); }
 @media (max-width: 760px) { .conn-grid { grid-template-columns: 1fr; } }
 

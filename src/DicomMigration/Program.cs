@@ -99,6 +99,42 @@ api.MapPost("/settings", async (SettingsStore store, Dictionary<string, string> 
     }
 });
 
+// C-ECHO connectivity test for the dashboard's Connections panel. AE/host/port may be supplied
+// in the body so the operator can test values typed into the form before saving them; anything
+// omitted falls back to the saved settings for that target.
+api.MapPost("/test-connection", async (
+    DicomQueryService query,
+    SettingsStore store,
+    TestConnectionRequest req,
+    CancellationToken ct) =>
+{
+    var settings = store.Current;
+
+    var saved = req.Target?.ToLowerInvariant() switch
+    {
+        "source"      => settings.Source,
+        "destination" => settings.Destination,
+        _             => null
+    };
+
+    if (saved is null)
+        return Results.BadRequest(new { error = "Target must be 'source' or 'destination'." });
+
+    var host = string.IsNullOrWhiteSpace(req.Host) ? saved.Host : req.Host.Trim();
+    var aeTitle = string.IsNullOrWhiteSpace(req.AeTitle) ? saved.AeTitle : req.AeTitle.Trim();
+    var port = req.Port ?? saved.Port;
+
+    if (string.IsNullOrWhiteSpace(aeTitle))
+        return Results.BadRequest(new { error = "AE Title is required." });
+    if (string.IsNullOrWhiteSpace(host))
+        return Results.BadRequest(new { error = "Host is required." });
+    if (port < 1 || port > 65535)
+        return Results.BadRequest(new { error = $"Port must be between 1 and 65535 (got {port})." });
+
+    var node = new DicomNode { AeTitle = aeTitle, Host = host, Port = port, UseTls = saved.UseTls };
+    return Results.Ok(await query.EchoAsync(node, ct));
+});
+
 api.MapGet("/studies", async (StudyRepository repo, string? status, int? limit, int? offset) =>
     Results.Ok(await repo.GetPageAsync(status, limit ?? 100, offset ?? 0)));
 

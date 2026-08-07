@@ -159,6 +159,39 @@ async function saveConnections() {
   }
 }
 
+// C-ECHO the values currently in the form, so a connection can be checked before saving.
+async function testConnection(target) {
+  const p = target === "source" ? "src" : "dst";
+  const btn = $("#c-" + p + "-test");
+  const msg = $("#c-" + p + "-test-msg");
+
+  const body = {
+    target: target,
+    aeTitle: $("#c-" + p + "-ae").value.trim(),
+    host: $("#c-" + p + "-host").value.trim(),
+    port: Number($("#c-" + p + "-port").value) || null,
+  };
+
+  btn.disabled = true;
+  msg.className = "test-msg";
+  msg.textContent = "Testing...";
+
+  try {
+    const r = await api("/test-connection", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    msg.className = "test-msg " + (r.ok ? "test-ok" : "test-err");
+    msg.textContent = (r.ok ? "Success" : r.message) + " (" + r.elapsedMs + "ms)";
+  } catch (e) {
+    msg.className = "test-msg test-err";
+    msg.textContent = e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 async function saveSettings() {
   const body = {
     "Move.MaxParallelMoves": String($("#t-parallel").value || "1"),
@@ -188,6 +221,8 @@ $("#refresh").addEventListener("click", () => { refreshStudies(); refreshEvents(
 $("#status-filter").addEventListener("change", refreshStudies);
 $("#t-save").addEventListener("click", saveSettings);
 $("#c-save").addEventListener("click", saveConnections);
+$("#c-src-test").addEventListener("click", () => testConnection("source"));
+$("#c-dst-test").addEventListener("click", () => testConnection("destination"));
 
 // Initial load + polling.
 loadConfig();
