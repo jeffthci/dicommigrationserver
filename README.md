@@ -169,7 +169,9 @@ What `install.ps1` does:
 4. Runs `DicomMigration.exe init-db` — creates the schema **and seeds the `settings` table** from that config.
 5. Registers the `DicomMigration` service (auto-start, restart-on-failure) and starts it.
 
-Then browse to `http://localhost:5080/`. After install, change AE config by re-running the installer; change throttle/verify live from the dashboard.
+Then browse to `http://localhost:5080/`. AE config, throttle, and verify level are all editable
+live from the dashboard's Connections and throttle panels — re-running the installer is only
+needed to upgrade binaries. Installer flags just seed the initial values.
 
 Uninstall (preserves the database unless `-RemoveFiles`):
 
