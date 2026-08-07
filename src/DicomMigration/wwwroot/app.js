@@ -103,20 +103,28 @@ async function refreshStudies() {
       <td>${esc(r.modalities)}</td>
       <td>${r.sourceInstanceCount ?? ""}</td>
       <td>${r.destInstanceCount ?? ""}</td>
-      <td><span class="status ${r.status}">${r.status}</span></td>
+      <td><span class="status ${esc(r.status)}">${esc(r.status)}</span></td>
       <td>${r.attempts}</td>
       <td>${esc(r.lastError)}</td>
-      <td class="row-actions">
-        <button class="push-btn" data-uid="${esc(r.studyInstanceUid)}">Push</button>
-        <button class="verify-btn" data-uid="${esc(r.studyInstanceUid)}">Verify</button>
-      </td>`;
+      <td class="row-actions"></td>`;
+
+    // Build the action buttons through the DOM rather than string interpolation, and close over
+    // the UID instead of storing it in an attribute. PACS-supplied values never reach the parser
+    // this way, so this stays safe regardless of what esc() does.
+    const actions = tr.querySelector(".row-actions");
+    actions.appendChild(actionButton("Push", "push-btn", "/move-study", r.studyInstanceUid));
+    actions.appendChild(actionButton("Verify", "verify-btn", "/verify-study", r.studyInstanceUid));
+
     tbody.appendChild(tr);
   }
-  // Rows are rebuilt on every poll, so wire the buttons here rather than once at load.
-  tbody.querySelectorAll(".push-btn").forEach((b) =>
-    b.addEventListener("click", () => studyAction("/move-study", b.dataset.uid, b)));
-  tbody.querySelectorAll(".verify-btn").forEach((b) =>
-    b.addEventListener("click", () => studyAction("/verify-study", b.dataset.uid, b)));
+}
+
+function actionButton(label, cls, path, uid) {
+  const b = document.createElement("button");
+  b.className = cls;
+  b.textContent = label;
+  b.addEventListener("click", () => studyAction(path, uid, b));
+  return b;
 }
 
 // Per-study push (C-MOVE) or re-verify (read-only C-FIND). Both share the phase gate with the
@@ -158,9 +166,14 @@ async function refreshEvents() {
   }
 }
 
+// Escapes for BOTH text and attribute context. Quotes matter: study metadata (patient name,
+// UIDs, descriptions) comes from the source PACS, so a value containing a double quote could
+// otherwise close an attribute and inject event handlers into the dashboard's own origin.
 function esc(s) {
   if (s == null) return "";
-  return String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
 }
 
 async function loadConfig() {
