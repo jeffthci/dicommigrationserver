@@ -1,0 +1,40 @@
+[Unit]
+Description=DICOM Migration Server
+Documentation=https://github.com/jeffthci/dicommigrationserver
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Type=notify because Program.cs calls UseSystemd(), which signals READY=1 via sd_notify
+# once the host has started. Using Type=simple here would make systemd report the unit
+# active before Kestrel is actually listening.
+Type=notify
+User=@SERVICE_USER@
+Group=@SERVICE_USER@
+WorkingDirectory=@INSTALL_DIR@
+ExecStart=@INSTALL_DIR@/DicomMigration
+Environment=DOTNET_ENVIRONMENT=Production
+# .NET writes diagnostic files to $HOME; the service user has no home directory.
+Environment=DOTNET_EnableDiagnostics=0
+
+Restart=on-failure
+RestartSec=5
+# .NET's console lifetime treats SIGINT as a clean shutdown; SIGTERM works too but SIGINT
+# matches the Ctrl+C path the app is tested against. A long-running C-MOVE may still be
+# in flight, so allow time to unwind before systemd escalates to SIGKILL.
+KillSignal=SIGINT
+TimeoutStopSec=60
+SyslogIdentifier=dicom-migration
+
+# Hardening. The app needs to write only its own data/ and logs/ subdirectories.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths=@INSTALL_DIR@
+
+[Install]
+WantedBy=multi-user.target

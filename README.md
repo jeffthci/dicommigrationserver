@@ -180,6 +180,91 @@ Uninstall (preserves the database unless `-RemoveFiles`):
 
 The SQLite database lives at `Database:Path` (default `data/migration.db`); under the service it resolves to the install directory, and logs roll daily under `logs/`.
 
+## Install as a Linux systemd service
+
+The application is platform-neutral; `Program.cs` calls both `UseWindowsService()` and
+`UseSystemd()`, each a no-op off its own platform, so one codebase serves both installs.
+
+### 1. Build the package (on a machine with the .NET SDK)
+
+Cross-publishing to Linux from the Windows dev box works — no Linux build machine needed:
+
+```powershell
+cd installer\linux
+.\build-tarball.ps1
+```
+
+This publishes a self-contained `linux-x64` build and produces
+`dist\DicomMigration-linux.tar.gz` (~43 MB compressed, ~99 MB installed) containing `app/`,
+`install.sh`, `uninstall.sh`, and the `dicom-migration.service` unit template. Shell scripts
+and the unit are written with LF endings regardless of the checkout's line-ending settings.
+
+Use `-Runtime linux-arm64` for an ARM server.
+
+### 2. Install on the target server
+
+```bash
+tar -xzf DicomMigration-linux.tar.gz
+cd DicomMigration-linux
+sudo bash install.sh \
+  --local-ae MIGRATE \
+  --source-ae SRC_PACS --source-host 10.0.0.10 --source-port 104 \
+  --dest-ae   DST_PACS --dest-host   10.0.0.20 --dest-port   104 \
+  --port 5080
+```
+
+(`bash install.sh` because a tar built on Windows does not carry the executable bit;
+`chmod +x install.sh && sudo ./install.sh` works equally well.)
+
+What `install.sh` does — the same sequence as the Windows installer:
+
+1. Creates the `dicommigration` system account (no home, no login shell) if absent, and stops
+   any running unit before replacing binaries.
+2. Copies `app/` into `/opt/dicom-migration` without deleting an existing `data/` or `logs/`,
+   so re-running is a safe in-place upgrade.
+3. Writes `appsettings.Production.json` (UTF-8, no BOM) from the flags.
+4. Runs `DicomMigration init-db` — schema plus settings seed — then chowns the tree to the
+   service account. Pass `--keep-settings` on an upgrade to leave dashboard-set values alone.
+5. Renders and installs `/etc/systemd/system/dicom-migration.service`, then enables and starts
+   it. The unit is `Type=notify`, so `systemctl` returns only once Kestrel is actually
+   listening — a failed start surfaces immediately rather than reporting a false "active".
+
+Defaults are overridable: `--install-dir`, `--service-name`, `--service-user`, `--listen`.
+
+**The dashboard binds `127.0.0.1` by default.** It has no authentication and its endpoints can
+start a migration against live PACS, so it is loopback-only unless you opt out. Reach it over
+an SSH tunnel:
+
+```bash
+ssh -L 5080:localhost:5080 <server>
+```
+
+Only pass `--listen 0.0.0.0` behind a trusted network or a proxy that adds authentication.
+
+Operating it:
+
+```bash
+systemctl status dicom-migration
+journalctl -u dicom-migration -f
+```
+
+Logs also roll daily under `/opt/dicom-migration/logs/`, and the SQLite database lives at
+`/opt/dicom-migration/data/migration.db`.
+
+Uninstall (preserves the database unless `--purge`):
+
+```bash
+sudo bash uninstall.sh                     # stop + remove unit, keep data
+sudo bash uninstall.sh --purge --remove-user
+```
+
+### Disk sizing
+
+The server never receives pixel data — the source PACS C-STOREs directly to the destination —
+so storage is only the binaries, the SQLite inventory (roughly one row per study, on the order
+of a few hundred bytes), and rolling logs. A 40 GB volume is generous even for a
+million-study inventory; it is the OS and log headroom that dominates, not this application.
+
 ## State model
 
 ```

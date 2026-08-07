@@ -5,6 +5,7 @@ using DicomMigration.Models;
 using DicomMigration.Services;
 using FellowOakDicom;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Hosting.Systemd;
 using Microsoft.Extensions.Hosting.WindowsServices;
 using Serilog;
 
@@ -16,14 +17,20 @@ if (args.Length > 0 && string.Equals(args[0], "init-db", StringComparison.Ordina
     return;
 }
 
-// Windows services start with CWD = C:\Windows\System32; anchor relative paths (data/, logs/)
-// to the install directory instead.
-if (WindowsServiceHelpers.IsWindowsService())
+// Service hosts do not start in the install directory: a Windows service gets
+// CWD = C:\Windows\System32, and a systemd unit gets whatever WorkingDirectory= says (/ if unset).
+// Anchor relative paths (Serilog's logs/) to the install directory instead. Database:Path is
+// already resolved against AppContext.BaseDirectory, so it does not depend on this.
+if (WindowsServiceHelpers.IsWindowsService() || SystemdHelpers.IsSystemdService())
     Directory.SetCurrentDirectory(AppContext.BaseDirectory);
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Both are no-ops on the other platform (and when run interactively), so the same build serves
+// the Windows MSI/service install and the Linux systemd install.
+// UseSystemd() signals readiness via sd_notify, so the unit must declare Type=notify.
 builder.Host.UseWindowsService(o => o.ServiceName = "DICOM Migration Server");
+builder.Host.UseSystemd();
 
 builder.Host.UseSerilog((ctx, cfg) => cfg
     .ReadFrom.Configuration(ctx.Configuration)

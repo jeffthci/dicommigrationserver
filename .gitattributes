@@ -1,0 +1,13 @@
+# Normalize text files in the repo, and let Git pick the working-tree ending by default.
+* text=auto
+
+# Files consumed by Linux MUST keep LF in the working tree. With core.autocrlf=true on a
+# Windows dev box these would otherwise be checked out with CRLF, which breaks a shell
+# script ("bad interpreter: /bin/bash^M") and a systemd unit.
+*.sh          text eol=lf
+*.service     text eol=lf
+
+# Windows-side scripts keep CRLF.
+*.ps1         text eol=crlf
+*.cmd         text eol=crlf
+*.bat         text eol=crlf
