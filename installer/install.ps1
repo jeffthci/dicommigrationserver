@@ -18,7 +18,10 @@
     5. Registers the Windows service (auto-start) and starts it.
 
   All configuration is provided via parameters with sensible defaults, so the installer
-  runs unattended. Re-running it performs an in-place upgrade.
+  runs unattended. Re-running it upgrades in place: it installs to wherever the existing service
+  lives, and PRESERVES the settings already in the database (so it will not silently repoint a
+  live migration). To change AE configuration, use the dashboard's Connections panel, or re-run
+  with -ReseedSettings to overwrite the stored settings from these parameters.
 
 .EXAMPLE
   # On the target server, after copying the build-package.ps1 output here:
@@ -27,12 +30,10 @@
 
 [CmdletBinding()]
 param(
-    # Under Program Files rather than a folder off the root of C:. A directory created directly
-    # under C:\ inherits an inherit-only Modify ACE for Authenticated Users, so any logged-on user
-    # could replace the service binary -- and this service runs as LocalSystem with auto-restart,
-    # making that a straight local privilege escalation to SYSTEM. The ACL is also hardened
-    # explicitly below, so a caller who overrides this path is still protected.
-    [string] $InstallDir          = (Join-Path $env:ProgramFiles "DICOM Migration Server"),
+    # Left empty so it can be resolved below: an existing service's own directory wins, so an
+    # upgrade never relocates a deployment (and never orphans its inventory database). Only a
+    # fresh install picks the default location.
+    [string] $InstallDir          = "",
     [string] $ServiceName         = "DicomMigration",
     # Overwrite the settings table from the parameters above even when a database already exists.
     # Off by default so a binaries-only upgrade cannot silently repoint the live AE configuration.
@@ -81,6 +82,47 @@ if (-not $ProjectPath) {
     $ProjectPath = Join-Path $scriptDir "..\src\DicomMigration\DicomMigration.csproj"
 }
 $ProjectPath = [System.IO.Path]::GetFullPath($ProjectPath)
+
+# --- 0. Resolve the install directory ----------------------------------------------------
+# An upgrade must land where the service already lives. Resolving by service name alone and
+# assuming a default path would decapitate the old install, create a fresh empty database at the
+# new location, and strand the existing inventory -- making the dashboard read 0 studies and
+# inviting a re-migration of imaging that had already been transferred.
+$existingDir = $null
+$existingSvc = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue
+if ($existingSvc -and $existingSvc.PathName) {
+    # PathName may be quoted and may carry arguments; take the executable then its directory.
+    $exeFromSvc = ([regex]::Match($existingSvc.PathName, '^\s*"([^"]+)"|^\s*(\S+)')).Groups |
+        Where-Object { $_.Success -and $_.Value -and $_.Value -notmatch '^\s*$' } |
+        Select-Object -Last 1 -ExpandProperty Value
+    if ($exeFromSvc -and (Test-Path $exeFromSvc)) { $existingDir = Split-Path -Parent $exeFromSvc }
+}
+
+# ProgramW6432 is the 64-bit Program Files even from a 32-bit PowerShell host, where
+# $env:ProgramFiles would resolve to "Program Files (x86)" and miss where the MSI installs.
+$programFiles = if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }
+$defaultDir = Join-Path $programFiles "DICOM Migration Server"
+
+if (-not $InstallDir) {
+    if ($existingDir) {
+        $InstallDir = $existingDir
+        Write-Step ("Existing service found; upgrading in place at " + $InstallDir)
+    }
+    else {
+        $InstallDir = $defaultDir
+    }
+}
+elseif ($existingDir -and ($existingDir.TrimEnd('\') -ne $InstallDir.TrimEnd('\'))) {
+    # An explicit relocation with data at the old path would silently abandon that data.
+    $oldDb = Join-Path $existingDir "data\migration.db"
+    if (Test-Path $oldDb) {
+        throw ("Service '$ServiceName' is installed at '$existingDir' and has an inventory " +
+               "database there, but -InstallDir points at '$InstallDir'. Installing would strand " +
+               "that database. Move '$existingDir\data' to the new location first, or re-run " +
+               "without -InstallDir to upgrade in place.")
+    }
+}
+
 $exePath = Join-Path $InstallDir "DicomMigration.exe"
 
 Write-Step ("Install directory: " + $InstallDir)
@@ -162,6 +204,32 @@ New-Item -ItemType Directory -Force -Path (Join-Path $InstallDir "data") | Out-N
 New-Item -ItemType Directory -Force -Path (Join-Path $InstallDir "logs") | Out-Null
 
 # --- 3. Write appsettings.Production.json (no BOM) ----------------------------------------
+# On an upgrade this file is left alone unless the caller is explicitly reconfiguring. It carries
+# the listen address as well as the seed DICOM config, so rewriting it from parameter defaults
+# during a binaries-only upgrade would revert a hand-set port or bind address. This mirrors the
+# --keep-settings behaviour of the Linux installer.
+$dbPath = Join-Path $InstallDir "data\migration.db"
+$prodPath = Join-Path $InstallDir "appsettings.Production.json"
+$isUpgrade = Test-Path $dbPath
+
+# Which DICOM parameters did the caller actually type? Defaults must not be mistaken for intent.
+$dicomParams = @('LocalAe','SourceAe','SourceHost','SourcePort','DestAe','DestHost','DestPort',
+                 'MaxParallelMoves','DelayBetweenMovesMs','MoveTimeoutMinutes','MaxAttempts','VerifyLevel','Port')
+$explicitDicom = @($dicomParams | Where-Object { $PSBoundParameters.ContainsKey($_) })
+
+if ($isUpgrade -and -not $ReseedSettings -and $explicitDicom.Count -gt 0) {
+    # Silently discarding typed configuration is the dangerous case: the operator would believe
+    # they had repointed the migration while the service kept using the old settings table.
+    throw ("An existing installation was found, so settings in the database are preserved and " +
+           "these parameters would be ignored: " + ($explicitDicom -join ', ') + ". " +
+           "Re-run with -ReseedSettings to apply them, or change AE/throttle settings from the " +
+           "dashboard's Connections panel (which applies them live).")
+}
+
+if ($isUpgrade -and -not $ReseedSettings -and (Test-Path $prodPath)) {
+    Write-Step "Keeping existing appsettings.Production.json (upgrade)."
+}
+else {
 Write-Step "Writing appsettings.Production.json ..."
 $settings = [ordered]@{
     Urls    = ("http://localhost:" + $Port)
@@ -188,17 +256,17 @@ $settings = [ordered]@{
     Database = [ordered]@{ Path = "data/migration.db" }
 }
 $json = $settings | ConvertTo-Json -Depth 8
-$prodPath = Join-Path $InstallDir "appsettings.Production.json"
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllText($prodPath, $json, $utf8NoBom)
+}
 
 # --- 4. Initialize and preconfigure the database -----------------------------------------
 # init-db force-reseeds the settings table from the parameters above. On an upgrade that would
 # silently repoint the live source/destination AEs back to this script's defaults, so an operator
 # re-running the installer just to drop in new binaries could send the next migration to the wrong
 # PACS. Skip the reseed when a database already exists unless -ReseedSettings is passed.
-$dbPath = Join-Path $InstallDir "data\migration.db"
-if ((Test-Path $dbPath) -and -not $ReseedSettings) {
+# ($dbPath / $isUpgrade were resolved in step 3.)
+if ($isUpgrade -and -not $ReseedSettings) {
     # Skipping init-db entirely is safe: the service calls Database.Initialize() on every start,
     # so the schema is still created/updated without touching the settings table.
     Write-Step "Existing database found; keeping its settings (pass -ReseedSettings to overwrite)."
@@ -227,4 +295,4 @@ Write-Host ""
 Write-Step ("Done. Service '" + $ServiceName + "' is " + $svc.Status + ".")
 Write-Step ("Dashboard: http://localhost:" + $Port + "/")
 Write-Step ("Config and inventory database: " + (Join-Path $InstallDir "data\migration.db"))
-Write-Step "Adjust throttle/verify from the dashboard, or re-run this installer to change AE config."
+Write-Step "Change AE/throttle/verify settings from the dashboard (they apply live), or re-run this installer with -ReseedSettings."

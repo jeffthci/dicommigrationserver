@@ -10,8 +10,8 @@
 #
 # Re-running is safe: it upgrades the binaries in place and preserves data/ (the
 # SQLite inventory) and logs/. Settings are re-seeded from the flags you pass, so
-# pass the same AE config on an upgrade, or omit --reseed-settings to keep what
-# the dashboard currently has.
+# pass the same AE config on an upgrade, or pass --keep-settings to preserve what
+# the dashboard currently has (and leave appsettings.Production.json untouched).
 
 set -euo pipefail
 
@@ -59,8 +59,9 @@ Options (all optional; defaults in brackets):
   --delay-ms N           delay between moves [0]
   --move-timeout-min N   [120]
   --max-attempts N       [2]
-  --verify-level LEVEL   Study or Series [Study]
-  --keep-settings        do not overwrite existing DB settings on upgrade
+  --verify-level LEVEL   Study, Series or Instance [Study]
+  --keep-settings        preserve existing DB settings AND appsettings.Production.json
+                         (use this for a binaries-only upgrade)
   -h, --help             show this help
 EOF
 }
@@ -93,6 +94,14 @@ while [ $# -gt 0 ]; do
 done
 
 [ "$(id -u)" -eq 0 ] || fail "Must run as root (use sudo)."
+
+# The app validates Verify.Level, and ParseLevel falls back to Study for anything unrecognized.
+# Seeding an invalid value straight into the settings table would silently downgrade verification
+# depth AND make the dashboard's throttle Save fail, since it re-posts every field.
+case "$VERIFY_LEVEL" in
+    Study|Series|Instance) ;;
+    *) fail "--verify-level must be Study, Series or Instance (got '$VERIFY_LEVEL')." ;;
+esac
 command -v systemctl >/dev/null 2>&1 || fail "systemctl not found; this installer targets systemd."
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"

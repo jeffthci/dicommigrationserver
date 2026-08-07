@@ -71,10 +71,25 @@ app.Services.GetRequiredService<SettingsStore>().Initialize();
     }
 }
 
-// Tie the running phase to host shutdown so a graceful stop cancels it rather than having the
-// process exit from under an in-flight C-MOVE.
+// Tie the running phase to host shutdown. Cancelling alone is not enough: the phase body runs on
+// a detached task, so without waiting the process would still exit mid-move and re-strand rows in
+// move_pending (which startup reclaim then has to clean up). Block shutdown until the phase
+// actually unwinds, bounded so a stuck association cannot hang the service stop indefinitely.
+// The unit's TimeoutStopSec is 60s, so stay under it.
 app.Lifetime.ApplicationStopping.Register(() =>
-    app.Services.GetRequiredService<MigrationOrchestrator>().Cancel());
+{
+    var orch = app.Services.GetRequiredService<MigrationOrchestrator>();
+    if (!orch.IsBusy) return;
+
+    app.Logger.LogInformation("Shutdown requested while a phase is running; cancelling and waiting.");
+    orch.Cancel();
+
+    if (orch.WaitForIdle(TimeSpan.FromSeconds(30)))
+        app.Logger.LogInformation("Phase stopped cleanly.");
+    else
+        app.Logger.LogWarning("Phase did not stop within 30s; exiting anyway. " +
+                              "Any study left in move_pending will be reclaimed on next start.");
+});
 
 app.UseDefaultFiles();
 app.UseStaticFiles();
@@ -91,7 +106,11 @@ api.AddEndpointFilter(async (ctx, next) =>
     var req = ctx.HttpContext.Request;
     if (HttpMethods.IsPost(req.Method) && !req.Headers.ContainsKey("X-Requested-With"))
     {
-        return Results.StatusCode(StatusCodes.Status403Forbidden);
+        // Explain rather than returning a bare 403: a script calling this API needs to know the
+        // header is the fix, not that it lacks credentials.
+        return Results.Json(
+            new { error = "Missing X-Requested-With header. Send 'X-Requested-With: XMLHttpRequest' on POST requests." },
+            statusCode: StatusCodes.Status403Forbidden);
     }
     return await next(ctx);
 });

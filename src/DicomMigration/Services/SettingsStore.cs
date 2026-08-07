@@ -19,8 +19,13 @@ public sealed class SettingsStore
     private readonly object _lock = new();
     private Dictionary<string, string> _cache = new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>Upper bound on concurrent C-MOVE associations against the source PACS.</summary>
-    private const int MaxParallelMovesCeiling = 16;
+    /// <summary>
+    /// Upper bound on concurrent C-MOVE associations against the source PACS. Public because the
+    /// orchestrator also clamps on read: the installers write the settings table directly and so
+    /// bypass this validation, and a stored out-of-range value must not brick the dashboard's
+    /// Save button (which re-posts every field) or uncork unbounded parallelism.
+    /// </summary>
+    public const int MaxParallelMovesCeiling = 16;
 
     // Flat keys mirror the appsettings "Dicom" structure (Section omitted).
     private static readonly HashSet<string> IntKeys = new(StringComparer.OrdinalIgnoreCase)

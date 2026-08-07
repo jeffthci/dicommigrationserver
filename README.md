@@ -164,7 +164,7 @@ Copy the package folder (or the zip) to the server, extract it, then run:
 What `install.ps1` does:
 
 1. Stops/removes any existing service instance (waits for the process to exit and the SCM to drop it, so re-running is a safe in-place upgrade).
-2. Installs the binaries from the bundled `app\` folder into `C:\Services\DicomMigration` (no SDK/build on the server). If no payload is present but the SDK + source are, it falls back to `dotnet publish` — handy for a dev-box install.
+2. Installs the binaries from the bundled `app\` folder (no SDK/build on the server) into the existing service's own directory if one is installed, otherwise `%ProgramFiles%\DICOM Migration Server` — the same location the MSI uses. Inheritance is stripped and an explicit DACL applied (SYSTEM + Administrators only), since the service runs as LocalSystem and the directory holds PHI. If no payload is present but the SDK + source are, it falls back to `dotnet publish` — handy for a dev-box install.
 3. Writes `appsettings.Production.json` (UTF-8, no BOM) from the parameters.
 4. Runs `DicomMigration.exe init-db` — creates the schema **and seeds the `settings` table** from that config.
 5. Registers the `DicomMigration` service (auto-start, restart-on-failure) and starts it.

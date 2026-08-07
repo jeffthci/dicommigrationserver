@@ -237,8 +237,8 @@ public sealed class DicomQueryService
             // optional keys were not supported". DicomStatus equality compares the code, so
             // `!= DicomStatus.Pending` is true for 0xFF01 — which would treat every match as a
             // final status, discard its dataset, and then be overwritten by the real Success,
-            // leaving a silently empty result set. The inventory asks for four optional keys,
-            // so 0xFF01 is exactly the response a stricter SCP would send.
+            // leaving a silently empty result set. These queries all request optional keys, so
+            // 0xFF01 is exactly what a stricter SCP would answer.
             if (response.Status.State != DicomState.Pending)
                 final.Value = response.Status;
 
@@ -296,8 +296,8 @@ public sealed class DicomQueryService
             // optional keys were not supported". DicomStatus equality compares the code, so
             // `!= DicomStatus.Pending` is true for 0xFF01 — which would treat every match as a
             // final status, discard its dataset, and then be overwritten by the real Success,
-            // leaving a silently empty result set. The inventory asks for four optional keys,
-            // so 0xFF01 is exactly the response a stricter SCP would send.
+            // leaving a silently empty result set. These queries all request optional keys, so
+            // 0xFF01 is exactly what a stricter SCP would answer.
             if (response.Status.State != DicomState.Pending)
                 final.Value = response.Status;
 
@@ -343,14 +343,18 @@ public sealed class DicomQueryService
             // optional keys were not supported". DicomStatus equality compares the code, so
             // `!= DicomStatus.Pending` is true for 0xFF01 — which would treat every match as a
             // final status, discard its dataset, and then be overwritten by the real Success,
-            // leaving a silently empty result set. The inventory asks for four optional keys,
-            // so 0xFF01 is exactly the response a stricter SCP would send.
+            // leaving a silently empty result set. These queries all request optional keys, so
+            // 0xFF01 is exactly what a stricter SCP would answer.
             if (response.Status.State != DicomState.Pending)
                 final.Value = response.Status;
 
             if (response.Status.State != DicomState.Pending || response.Dataset is null)
                 return;
-            var sop = response.Dataset.GetSingleValueOrDefault(DicomTag.SOPInstanceUID, "");
+            // Trim before comparing across two PACS. A UI VR is padded to even length with a
+            // trailing NULL, and implementations differ on whether they strip it. Comparing padded
+            // against unpadded UIDs would report a perfectly migrated study as entirely missing.
+            var sop = response.Dataset.GetSingleValueOrDefault(DicomTag.SOPInstanceUID, "")
+                ?.Trim().TrimEnd('\0');
             if (!string.IsNullOrWhiteSpace(sop))
                 sopUids.Add(sop);
         };
@@ -358,7 +362,7 @@ public sealed class DicomQueryService
         var client = CreateClient(node, settings);
         await client.AddRequestAsync(request);
         await client.SendAsync(ct);
-        EnsureFindSucceeded(final, node, "Instance-count C-FIND");
+        EnsureFindSucceeded(final, node, "Instance-level C-FIND");
         return sopUids;
     }
 

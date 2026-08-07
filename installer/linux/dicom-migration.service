@@ -19,10 +19,12 @@ Environment=DOTNET_EnableDiagnostics=0
 
 Restart=on-failure
 RestartSec=5
-# .NET's console lifetime treats SIGINT as a clean shutdown; SIGTERM works too but SIGINT
-# matches the Ctrl+C path the app is tested against. A long-running C-MOVE may still be
-# in flight, so allow time to unwind before systemd escalates to SIGKILL.
-KillSignal=SIGINT
+# No KillSignal override: systemd's default SIGTERM is what .NET's systemd host lifetime acts on.
+# This unit previously set KillSignal=SIGINT, and the process then died immediately with no
+# graceful shutdown at all -- verified by the absence of any "Application is shutting down" entry
+# in the journal, and a `systemctl stop` that returned in 0s while a phase was mid-run. That is
+# precisely how studies ended up stranded in move_pending.
+# A long-running C-MOVE may still be in flight, so allow time to unwind before SIGKILL.
 TimeoutStopSec=60
 SyslogIdentifier=dicom-migration
 
@@ -36,7 +38,9 @@ ProtectControlGroups=true
 RestrictSUIDSGID=true
 # Only data/ and logs/ need to be writable. Granting the whole install directory let the service
 # rewrite its own executable, which turns any code-execution bug into persistence.
-ReadWritePaths=@INSTALL_DIR@/data @INSTALL_DIR@/logs
+# '-' prefixed so a missing directory is tolerated rather than refusing to start the unit
+# outright. The installer creates both, but a hand-deleted logs/ should not brick the service.
+ReadWritePaths=-@INSTALL_DIR@/data -@INSTALL_DIR@/logs
 
 [Install]
 WantedBy=multi-user.target

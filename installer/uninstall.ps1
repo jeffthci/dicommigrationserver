@@ -13,7 +13,9 @@
 
 [CmdletBinding()]
 param(
-    [string] $InstallDir  = "C:\Services\DicomMigration",
+    # Resolved from the installed service below, so -RemoveFiles cannot delete the wrong directory
+    # or -- worse -- report success while leaving the PHI-bearing inventory database on disk.
+    [string] $InstallDir  = "",
     [string] $ServiceName = "DicomMigration",
     [switch] $RemoveFiles
 )
@@ -21,6 +23,25 @@ param(
 $ErrorActionPreference = "Stop"
 
 function Write-Step([string] $msg) { Write-Host ("[uninstall] " + $msg) -ForegroundColor Cyan }
+
+# Resolve the install directory from the service's own ImagePath. install.ps1 places the service
+# where an existing one already lives (or under Program Files for a fresh install), so a hardcoded
+# default here would silently miss it.
+if (-not $InstallDir) {
+    $svcInfo = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue
+    if ($svcInfo -and $svcInfo.PathName) {
+        $exeFromSvc = ([regex]::Match($svcInfo.PathName, '^\s*"([^"]+)"|^\s*(\S+)')).Groups |
+            Where-Object { $_.Success -and $_.Value -and $_.Value -notmatch '^\s*$' } |
+            Select-Object -Last 1 -ExpandProperty Value
+        if ($exeFromSvc) { $InstallDir = Split-Path -Parent $exeFromSvc }
+    }
+    if (-not $InstallDir) {
+        $programFiles = if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }
+        $InstallDir = Join-Path $programFiles "DICOM Migration Server"
+    }
+}
+
+Write-Step ("Install directory: " + $InstallDir)
 
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
 if (-not $isAdmin) {

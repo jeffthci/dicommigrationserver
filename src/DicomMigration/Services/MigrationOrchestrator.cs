@@ -45,6 +45,21 @@ public sealed class MigrationOrchestrator
 
     public bool IsBusy => _gate.CurrentCount == 0;
 
+    /// <summary>
+    /// Blocks until no phase is running, or the timeout expires. Returns true if it went idle.
+    /// Used on shutdown so the process does not exit out from under an in-flight C-MOVE, which
+    /// would strand rows in move_pending. Acquiring the phase gate is exactly "the phase finished",
+    /// since RunHeldAsync releases it in its finally.
+    /// </summary>
+    public bool WaitForIdle(TimeSpan timeout)
+    {
+        if (!_gate.Wait(timeout))
+            return false;
+
+        _gate.Release();
+        return true;
+    }
+
     public void Cancel()
     {
         CancellationTokenSource? cts;
@@ -256,7 +271,11 @@ public sealed class MigrationOrchestrator
     {
         UpdateState(s => s.Total = studies.Count);
 
-        var parallelism = Math.Max(1, _settings.Current.Move.MaxParallelMoves);
+        // Clamp on read, not just on write: the API validates this key, but the installers seed the
+        // settings table directly, so a value outside the accepted range can already be in the
+        // database. Clamping here means such a value degrades to a safe pace rather than opening an
+        // unbounded number of associations against a live clinical PACS.
+        var parallelism = Math.Clamp(_settings.Current.Move.MaxParallelMoves, 1, SettingsStore.MaxParallelMovesCeiling);
         using var throttle = new SemaphoreSlim(parallelism, parallelism);
 
         var tasks = studies.Select(async study =>
@@ -423,6 +442,12 @@ public sealed class MigrationOrchestrator
             return (false, $"source reported 0 {what}s - cannot verify");
         if (!dest.HasValue)
             return (false, $"destination {what} count unavailable - cannot verify");
+        // Counts alone cannot prove containment, so a destination holding MORE than the source is
+        // reported rather than passed — but it is called out separately, because it usually means
+        // the destination already held data for this study rather than that the migration failed.
+        // (Instance-level verification CAN prove containment, by UID, and does allow a superset.)
+        if (dest.Value > source.Value)
+            return (false, $"destination has more {what}s than source ({dest} > {source}) - cannot confirm by count");
         if (source.Value != dest.Value)
             return (false, $"{what} count mismatch");
 

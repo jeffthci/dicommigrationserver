@@ -215,7 +215,10 @@ async function loadConfig() {
 async function loadSettings() {
   try {
     const s = await api("/settings");
-    $("#t-parallel").value = s.move.maxParallelMoves;
+    // Clamp to the input's range. A value seeded outside it (the installers write the settings
+    // table directly, bypassing API validation) would otherwise load into the form and make Save
+    // fail on every attempt, since Save re-posts every field.
+    $("#t-parallel").value = Math.min(Math.max(s.move.maxParallelMoves, 1), 16);
     $("#t-delay").value = s.move.delayBetweenMovesMs;
     $("#t-verify").value = s.verify.level;
     $("#t-chunk").value = s.inventory.chunkDays;

@@ -19,7 +19,9 @@ data itself. Repo: https://github.com/jeffthci/dicommigrationserver.git
 Not live anywhere yet (as of 2026-08-07). Two supported targets, one codebase:
 
 - **Windows** — WiX v5 MSI or `installer\build-package.ps1` + `install.ps1`; installs to
-  `C:\Services\DicomMigration` as the `DicomMigration` service.
+  `%ProgramFiles%\DICOM Migration Server` (or wherever an existing service already lives) as the
+  `DicomMigration` service. Re-running upgrades in place and PRESERVES stored settings; pass
+  `-ReseedSettings` to overwrite them from parameters.
 - **Linux (the intended target)** — `installer\linux\build-tarball.ps1` cross-publishes
   `linux-x64` from the Windows dev box; `install.sh` on the server installs to
   `/opt/dicom-migration` as the `dicom-migration` systemd unit.
