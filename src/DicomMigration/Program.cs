@@ -56,10 +56,45 @@ var app = builder.Build();
 app.Services.GetRequiredService<Database>().Initialize();
 app.Services.GetRequiredService<SettingsStore>().Initialize();
 
+// Reclaim studies stranded in move_pending by a previous process that stopped mid-move (a crash,
+// or an installer stopping the service to upgrade). Without this they are invisible to every
+// phase and look accounted-for on the dashboard while never having reached the destination.
+{
+    var repo = app.Services.GetRequiredService<StudyRepository>();
+    var reclaimed = await repo.ReclaimInterruptedMovesAsync();
+    if (reclaimed > 0)
+    {
+        app.Logger.LogWarning("Reclaimed {Count} studies left in move_pending by an interrupted run; " +
+                              "they are now move_failed and will be picked up by Retry.", reclaimed);
+        await repo.LogEventAsync(null, "warn",
+            $"Startup: reclaimed {reclaimed} studies interrupted mid-move (now move_failed)");
+    }
+}
+
+// Tie the running phase to host shutdown so a graceful stop cancels it rather than having the
+// process exit from under an in-flight C-MOVE.
+app.Lifetime.ApplicationStopping.Register(() =>
+    app.Services.GetRequiredService<MigrationOrchestrator>().Cancel());
+
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
 var api = app.MapGroup("/api");
+
+// CSRF guard. The dashboard has no authentication, so a page on any other origin could otherwise
+// POST here and start or cancel a migration against live PACS -- a plain form submission needs no
+// CORS permission. Requiring a header that only same-origin script can set (browsers preflight
+// custom headers, and this endpoint sends no CORS headers so the preflight fails) blocks that
+// without adding a login. Non-browser callers (curl, scripts) simply send the header.
+api.AddEndpointFilter(async (ctx, next) =>
+{
+    var req = ctx.HttpContext.Request;
+    if (HttpMethods.IsPost(req.Method) && !req.Headers.ContainsKey("X-Requested-With"))
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+    return await next(ctx);
+});
 
 api.MapGet("/status", async (MigrationOrchestrator orch, StudyRepository repo) => Results.Ok(new
 {
@@ -135,11 +170,16 @@ api.MapPost("/test-connection", async (
     return Results.Ok(await query.EchoAsync(node, ct));
 });
 
+// limit/offset are clamped: SQLite treats a negative LIMIT as "no limit", so an unclamped
+// caller could pull the entire PHI-bearing inventory in one response.
 api.MapGet("/studies", async (StudyRepository repo, string? status, int? limit, int? offset) =>
-    Results.Ok(await repo.GetPageAsync(status, limit ?? 100, offset ?? 0)));
+    Results.Ok(await repo.GetPageAsync(status, Clamp(limit, 100, 1000), Math.Max(0, offset ?? 0))));
 
 api.MapGet("/events", async (StudyRepository repo, int? limit) =>
-    Results.Ok(await repo.GetRecentEventsAsync(limit ?? 100)));
+    Results.Ok(await repo.GetRecentEventsAsync(Clamp(limit, 100, 1000))));
+
+static int Clamp(int? requested, int fallback, int max) =>
+    requested is null ? fallback : Math.Clamp(requested.Value, 1, max);
 
 api.MapPost("/inventory", (MigrationOrchestrator orch, InventoryFilter? filter) =>
     StartPhase(() => orch.StartInventory(filter ?? new InventoryFilter())));

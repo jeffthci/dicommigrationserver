@@ -232,10 +232,17 @@ public sealed class DicomQueryService
         var final = new FinalStatus();
         request.OnResponseReceived += (req, response) =>
         {
-            if (response.Status != DicomStatus.Pending)
+            // Compare by STATE, not by status code. DICOM PS3.4 C.4.1.1.4 defines two pending
+            // C-FIND statuses: 0xFF00, and 0xFF01 meaning "matches continuing, but one or more
+            // optional keys were not supported". DicomStatus equality compares the code, so
+            // `!= DicomStatus.Pending` is true for 0xFF01 — which would treat every match as a
+            // final status, discard its dataset, and then be overwritten by the real Success,
+            // leaving a silently empty result set. The inventory asks for four optional keys,
+            // so 0xFF01 is exactly the response a stricter SCP would send.
+            if (response.Status.State != DicomState.Pending)
                 final.Value = response.Status;
 
-            if (response.Status != DicomStatus.Pending || response.Dataset is null)
+            if (response.Status.State != DicomState.Pending || response.Dataset is null)
                 return;
 
             var uid = response.Dataset.GetSingleValueOrDefault(DicomTag.StudyInstanceUID, "");
@@ -284,10 +291,17 @@ public sealed class DicomQueryService
         var final = new FinalStatus();
         request.OnResponseReceived += (req, response) =>
         {
-            if (response.Status != DicomStatus.Pending)
+            // Compare by STATE, not by status code. DICOM PS3.4 C.4.1.1.4 defines two pending
+            // C-FIND statuses: 0xFF00, and 0xFF01 meaning "matches continuing, but one or more
+            // optional keys were not supported". DicomStatus equality compares the code, so
+            // `!= DicomStatus.Pending` is true for 0xFF01 — which would treat every match as a
+            // final status, discard its dataset, and then be overwritten by the real Success,
+            // leaving a silently empty result set. The inventory asks for four optional keys,
+            // so 0xFF01 is exactly the response a stricter SCP would send.
+            if (response.Status.State != DicomState.Pending)
                 final.Value = response.Status;
 
-            if (response.Status != DicomStatus.Pending || response.Dataset is null)
+            if (response.Status.State != DicomState.Pending || response.Dataset is null)
                 return;
             found = true;
             series = GetInt(response.Dataset, DicomTag.NumberOfStudyRelatedSeries);
@@ -304,10 +318,14 @@ public sealed class DicomQueryService
     }
 
     /// <summary>
-    /// IMAGE-level C-FIND that counts SOP Instance UIDs for a study. Definitive but heavier;
-    /// used for Instance-level verification when NumberOfStudyRelatedInstances is unreliable.
+    /// IMAGE-level C-FIND returning the set of SOP Instance UIDs for a study. Definitive but
+    /// heavier; used for Instance-level verification when NumberOfStudyRelatedInstances is
+    /// unreliable.
+    ///
+    /// Returns the UIDs rather than a count so the caller can compare identity, not just
+    /// magnitude: equal counts do not prove the destination holds the same instances.
     /// </summary>
-    public async Task<int> CountInstancesAsync(DicomNode node, string studyInstanceUid, CancellationToken ct)
+    public async Task<IReadOnlySet<string>> FindInstanceUidsAsync(DicomNode node, string studyInstanceUid, CancellationToken ct)
     {
         var settings = _settings.Current;
         var sopUids = new HashSet<string>();
@@ -320,10 +338,17 @@ public sealed class DicomQueryService
         var final = new FinalStatus();
         request.OnResponseReceived += (req, response) =>
         {
-            if (response.Status != DicomStatus.Pending)
+            // Compare by STATE, not by status code. DICOM PS3.4 C.4.1.1.4 defines two pending
+            // C-FIND statuses: 0xFF00, and 0xFF01 meaning "matches continuing, but one or more
+            // optional keys were not supported". DicomStatus equality compares the code, so
+            // `!= DicomStatus.Pending` is true for 0xFF01 — which would treat every match as a
+            // final status, discard its dataset, and then be overwritten by the real Success,
+            // leaving a silently empty result set. The inventory asks for four optional keys,
+            // so 0xFF01 is exactly the response a stricter SCP would send.
+            if (response.Status.State != DicomState.Pending)
                 final.Value = response.Status;
 
-            if (response.Status != DicomStatus.Pending || response.Dataset is null)
+            if (response.Status.State != DicomState.Pending || response.Dataset is null)
                 return;
             var sop = response.Dataset.GetSingleValueOrDefault(DicomTag.SOPInstanceUID, "");
             if (!string.IsNullOrWhiteSpace(sop))
@@ -334,7 +359,7 @@ public sealed class DicomQueryService
         await client.AddRequestAsync(request);
         await client.SendAsync(ct);
         EnsureFindSucceeded(final, node, "Instance-count C-FIND");
-        return sopUids.Count;
+        return sopUids;
     }
 
     private static int? GetInt(DicomDataset ds, DicomTag tag)

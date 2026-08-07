@@ -34,7 +34,9 @@ ProtectHome=true
 ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
-ReadWritePaths=@INSTALL_DIR@
+# Only data/ and logs/ need to be writable. Granting the whole install directory let the service
+# rewrite its own executable, which turns any code-execution bug into persistence.
+ReadWritePaths=@INSTALL_DIR@/data @INSTALL_DIR@/logs
 
 [Install]
 WantedBy=multi-user.target

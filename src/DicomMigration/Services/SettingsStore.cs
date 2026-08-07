@@ -19,6 +19,9 @@ public sealed class SettingsStore
     private readonly object _lock = new();
     private Dictionary<string, string> _cache = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>Upper bound on concurrent C-MOVE associations against the source PACS.</summary>
+    private const int MaxParallelMovesCeiling = 16;
+
     // Flat keys mirror the appsettings "Dicom" structure (Section omitted).
     private static readonly HashSet<string> IntKeys = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -180,46 +183,81 @@ public sealed class SettingsStore
         var editable = new HashSet<string>(EditableKeys, StringComparer.OrdinalIgnoreCase);
         var now = DateTime.UtcNow.ToString("o");
 
-        using var conn = _db.Open();
+        // Validate EVERY change before writing ANY of them. Previously validation happened inside
+        // the write loop, so a request whose third key was invalid left the first two committed
+        // while the in-memory cache kept the old values -- the DB and the running config diverged,
+        // and the divergence only surfaced on the next restart.
+        var pending = new List<(string Key, string Value)>();
         foreach (var (key, rawValue) in changes)
         {
             if (!editable.Contains(key)) continue;
             var value = rawValue?.Trim() ?? "";
+            Validate(key, value);
+            pending.Add((key, value));
+        }
 
-            if (IntKeys.Contains(key))
-            {
-                if (!int.TryParse(value, out var n))
-                    throw new ArgumentException($"Setting '{key}' must be an integer (got '{value}').");
-                if (PortKeys.Contains(key) && (n < 1 || n > 65535))
-                    throw new ArgumentException($"Setting '{key}' must be a port between 1 and 65535 (got {n}).");
-            }
-            else if (BoolKeys.Contains(key))
-            {
-                if (!bool.TryParse(value, out _))
-                    throw new ArgumentException($"Setting '{key}' must be true/false (got '{value}').");
-            }
-            else if (AeTitleKeys.Contains(key))
-            {
-                if (value.Length == 0)
-                    throw new ArgumentException($"Setting '{key}' (AE Title) is required.");
-                if (value.Length > 16)
-                    throw new ArgumentException($"Setting '{key}' (AE Title) must be 16 characters or fewer.");
-                if (value.Contains('\\'))
-                    throw new ArgumentException($"Setting '{key}' (AE Title) may not contain a backslash.");
-            }
-            else if (HostKeys.Contains(key))
-            {
-                if (value.Length == 0)
-                    throw new ArgumentException($"Setting '{key}' (host) is required.");
-            }
+        if (pending.Count == 0) return;
 
-            await conn.ExecuteAsync(
-                "INSERT INTO settings (key, value, updated_at) VALUES (@key, @value, @now) " +
-                "ON CONFLICT(key) DO UPDATE SET value = @value, updated_at = @now",
-                new { key, value, now });
+        using var conn = _db.Open();
+        using (var tx = conn.BeginTransaction())
+        {
+            foreach (var (key, value) in pending)
+            {
+                await conn.ExecuteAsync(
+                    "INSERT INTO settings (key, value, updated_at) VALUES (@key, @value, @now) " +
+                    "ON CONFLICT(key) DO UPDATE SET value = @value, updated_at = @now",
+                    new { key, value, now }, tx);
+            }
+            tx.Commit();
         }
 
         var loaded = LoadRows(conn);
         lock (_lock) _cache = loaded;
+    }
+
+    private static void Validate(string key, string value)
+    {
+        if (IntKeys.Contains(key))
+        {
+            if (!int.TryParse(value, out var n))
+                throw new ArgumentException($"Setting '{key}' must be an integer (got '{value}').");
+            if (PortKeys.Contains(key) && (n < 1 || n > 65535))
+                throw new ArgumentException($"Setting '{key}' must be a port between 1 and 65535 (got {n}).");
+
+            // Parallel C-MOVE associations land on a live clinical PACS, many of which allow only
+            // one. An unbounded value here is a denial of service against imaging that is in use
+            // for patient care, so cap it rather than trusting the caller.
+            if (key.Equals("Move.MaxParallelMoves", StringComparison.OrdinalIgnoreCase) && (n < 1 || n > MaxParallelMovesCeiling))
+                throw new ArgumentException($"Setting '{key}' must be between 1 and {MaxParallelMovesCeiling} (got {n}).");
+
+            if (!PortKeys.Contains(key) && n < 0)
+                throw new ArgumentException($"Setting '{key}' may not be negative (got {n}).");
+        }
+        else if (BoolKeys.Contains(key))
+        {
+            if (!bool.TryParse(value, out _))
+                throw new ArgumentException($"Setting '{key}' must be true/false (got '{value}').");
+        }
+        else if (AeTitleKeys.Contains(key))
+        {
+            if (value.Length == 0)
+                throw new ArgumentException($"Setting '{key}' (AE Title) is required.");
+            if (value.Length > 16)
+                throw new ArgumentException($"Setting '{key}' (AE Title) must be 16 characters or fewer.");
+            if (value.Contains('\\'))
+                throw new ArgumentException($"Setting '{key}' (AE Title) may not contain a backslash.");
+        }
+        else if (HostKeys.Contains(key))
+        {
+            if (value.Length == 0)
+                throw new ArgumentException($"Setting '{key}' (host) is required.");
+        }
+        else if (key.Equals("Verify.Level", StringComparison.OrdinalIgnoreCase))
+        {
+            // ParseLevel falls back to Study for anything unrecognized, so an unvalidated value
+            // silently downgraded verification depth instead of reporting the mistake.
+            if (!Enum.TryParse<VerifyLevel>(value, ignoreCase: true, out _))
+                throw new ArgumentException($"Setting '{key}' must be Study, Series or Instance (got '{value}').");
+        }
     }
 }

@@ -1,7 +1,11 @@
 const $ = (sel) => document.querySelector(sel);
 
 async function api(path, opts) {
-  const res = await fetch("/api" + path, opts);
+  // X-Requested-With is the server's CSRF guard on POSTs: a cross-origin page cannot set a
+  // custom header without a preflight, and this API sends no CORS headers, so the preflight fails.
+  const o = { ...(opts || {}) };
+  o.headers = { ...(o.headers || {}), "X-Requested-With": "XMLHttpRequest" };
+  const res = await fetch("/api" + path, o);
   if (!res.ok && res.status !== 409) {
     // Surface the server's {"error": "..."} message rather than the raw JSON wrapper.
     const txt = await res.text();
@@ -41,9 +45,30 @@ function inventoryFilter() {
 
 function pct(p, t) { return t > 0 ? Math.round((p / t) * 100) : 0; }
 
+// Banner shown when polling fails, so "the service is down" never reads as "still running".
+function setConnected(ok, detail) {
+  const el = $("#conn-banner");
+  if (!el) return;
+  if (ok) {
+    el.hidden = true;
+    el.textContent = "";
+  } else {
+    el.hidden = false;
+    el.textContent = "Lost contact with the server - displayed state is stale. " + (detail || "");
+  }
+}
+
 async function refreshStatus() {
   let data;
-  try { data = await api("/status"); } catch { return; }
+  try {
+    data = await api("/status");
+    setConnected(true);
+  } catch (e) {
+    // Do NOT fail silently: a dead backend used to leave the last-known state on screen, so a
+    // stopped service was indistinguishable from a migration still running.
+    setConnected(false, e.message);
+    return;
+  }
   const s = data.state;
 
   $("#phase-label").textContent = s.phase + (s.isRunning ? " (running)" : "");

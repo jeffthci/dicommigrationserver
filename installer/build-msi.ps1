@@ -16,12 +16,16 @@
   Fee EULA. v5 is MIT-licensed and free.
 
 .EXAMPLE
-  .\build-msi.ps1 -Version 1.0.0.0
+  .\build-msi.ps1 -Version 1.0.1
 #>
 
 [CmdletBinding()]
 param(
-    [string] $Version       = "1.0.0.0",
+    # Three fields only. Windows Installer compares just major.minor.build for upgrade detection
+    # and IGNORES a fourth field, so "1.0.0.1" over "1.0.0.0" is not seen as newer: MajorUpgrade
+    # does not fire, the new MSI refuses as already-installed, and the operator believes they
+    # upgraded when the old binaries are still running. Bump one of the three fields per build.
+    [string] $Version       = "1.0.0",
     [string] $PublishDir,
     [string] $OutputDir,
     [string] $Runtime       = "win-x64",
@@ -75,6 +79,11 @@ Move-Item (Join-Path $PublishDir "DicomMigration.exe") (Join-Path $exeDir "Dicom
 # 2. Build the MSI -------------------------------------------------------------------------
 $msi = Join-Path $OutputDir "DicomMigration.msi"
 if (Test-Path $msi) { Remove-Item $msi -Force }
+if ($Version.Split(".").Count -gt 3) {
+    throw ("Version '" + $Version + "' has more than three fields. Windows Installer ignores the " +
+           "fourth, so such builds are not detected as upgrades. Use major.minor.build.")
+}
+
 Write-Step ("Building MSI (version " + $Version + ") ...")
 & wix build $wxs -arch x64 -ext WixToolset.Util.wixext -d "PublishDir=$PublishDir" -d "ExeDir=$exeDir" -d "Version=$Version" -o $msi
 if ($LASTEXITCODE -ne 0) { throw "wix build failed with exit code $LASTEXITCODE" }

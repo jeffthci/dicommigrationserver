@@ -127,6 +127,12 @@ chmod +x "$exe"
 mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/logs"
 
 # --- 4. appsettings.Production.json (UTF-8, no BOM) ------------------------------------
+# Under --keep-settings this file is left alone. It carries the listen address as well as the
+# seed AE config, so rewriting it from flag defaults during a binaries-only upgrade silently
+# reverted the dashboard to loopback and undid any hand-edited bind address.
+if [ "$KEEP_SETTINGS" -eq 1 ] && [ -f "$INSTALL_DIR/appsettings.Production.json" ]; then
+    step "Keeping existing appsettings.Production.json (--keep-settings)."
+else
 step "Writing appsettings.Production.json ..."
 cat > "$INSTALL_DIR/appsettings.Production.json" <<EOF
 {
@@ -154,6 +160,7 @@ cat > "$INSTALL_DIR/appsettings.Production.json" <<EOF
   "Database": { "Path": "data/migration.db" }
 }
 EOF
+fi
 
 # --- 5. Database schema + settings seed -------------------------------------------------
 if [ "$KEEP_SETTINGS" -eq 1 ] && [ -f "$INSTALL_DIR/data/migration.db" ]; then
@@ -165,6 +172,13 @@ fi
 
 # Ownership after init-db so root-created files end up owned by the service account.
 chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
+
+# The inventory database and logs hold PHI (patient names, IDs, accession numbers), so they must
+# not be world-readable. Any local account could otherwise read the whole archive index.
+chmod 0750 "$INSTALL_DIR/data" "$INSTALL_DIR/logs"
+find "$INSTALL_DIR/data" "$INSTALL_DIR/logs" -type f -exec chmod 0640 {} + 2>/dev/null || true
+# appsettings.Production.json carries AE/host config; no secrets today, but keep it off world-read.
+[ -f "$INSTALL_DIR/appsettings.Production.json" ] && chmod 0640 "$INSTALL_DIR/appsettings.Production.json"
 
 # --- 6. systemd unit --------------------------------------------------------------------
 step "Installing systemd unit $SERVICE_NAME.service ..."

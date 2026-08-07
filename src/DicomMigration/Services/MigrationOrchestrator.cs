@@ -366,25 +366,32 @@ public sealed class MigrationOrchestrator
             return;
         }
 
-        // For Instance-level verification, count SOP UIDs directly rather than trusting the
+        // For Instance-level verification, enumerate SOP UIDs directly rather than trusting the
         // NumberOfStudyRelatedInstances field, which some PACS leave empty.
-        int? srcInstances = study.SourceInstanceCount;
         int? cmpDestInstances = destInstances;
+        (bool ok, string? reason) result;
+
         if (level == VerifyLevel.Instance)
         {
-            srcInstances = await _query.CountInstancesAsync(settings.Source, study.StudyInstanceUid, ct);
-            cmpDestInstances = await _query.CountInstancesAsync(settings.Destination, study.StudyInstanceUid, ct);
+            var srcUids = await _query.FindInstanceUidsAsync(settings.Source, study.StudyInstanceUid, ct);
+            var dstUids = await _query.FindInstanceUidsAsync(settings.Destination, study.StudyInstanceUid, ct);
+            cmpDestInstances = dstUids.Count;
+            result = CompareInstanceUids(srcUids, dstUids);
+        }
+        else if (level == VerifyLevel.Series)
+        {
+            result = CompareCounts(study.SourceSeriesCount, destSeries, "series");
+        }
+        else
+        {
+            result = CompareCounts(study.SourceInstanceCount, destInstances, "instance");
         }
 
-        bool match = level switch
-        {
-            VerifyLevel.Series => destSeries.HasValue && study.SourceSeriesCount.HasValue && destSeries == study.SourceSeriesCount,
-            VerifyLevel.Instance => srcInstances.HasValue && cmpDestInstances.HasValue && srcInstances == cmpDestInstances,
-            _ => CompareStudyCounts(study.SourceInstanceCount, destInstances)
-        };
-
+        var (match, reason) = result;
         var status = match ? MigrationStatus.Verified : MigrationStatus.Mismatch;
-        var error = match ? null : $"src={study.SourceInstanceCount}/{study.SourceSeriesCount} dest={cmpDestInstances ?? destInstances}/{destSeries}";
+        var error = match
+            ? null
+            : $"{reason} (src={study.SourceInstanceCount}/{study.SourceSeriesCount} dest={cmpDestInstances ?? destInstances}/{destSeries})";
 
         await _repo.RecordVerifyAsync(study.StudyInstanceUid, status, destSeries, cmpDestInstances ?? destInstances, error);
         await _repo.LogEventAsync(study.StudyInstanceUid, match ? "info" : "warn",
@@ -398,14 +405,45 @@ public sealed class MigrationOrchestrator
     }
 
     /// <summary>
-    /// Study-level comparison. If the source never reported an instance count we can't prove
-    /// equality, so treat "destination has data and source count unknown" as a best-effort pass.
+    /// Count comparison for Study and Series verification.
+    ///
+    /// A comparison in which either side was never measured is NOT a pass. The previous behaviour
+    /// returned true for "destination has something and the source count is unknown", which is
+    /// unsound: NumberOfStudyRelatedInstances / NumberOfStudyRelatedSeries are OPTIONAL C-FIND
+    /// return keys, so a source that omits them left every study unmeasured — and three instances
+    /// arriving out of five hundred scored as verified. A zero-to-zero comparison is likewise not
+    /// evidence of anything. Both now surface as a mismatch with the reason stated, so an
+    /// unverifiable study is visible rather than silently green.
     /// </summary>
-    private static bool CompareStudyCounts(int? source, int? dest)
+    private static (bool ok, string? reason) CompareCounts(int? source, int? dest, string what)
     {
-        if (source.HasValue && dest.HasValue)
-            return source == dest;
-        return dest is > 0 && source is null;
+        if (!source.HasValue)
+            return (false, $"source {what} count unavailable - cannot verify");
+        if (source.Value == 0)
+            return (false, $"source reported 0 {what}s - cannot verify");
+        if (!dest.HasValue)
+            return (false, $"destination {what} count unavailable - cannot verify");
+        if (source.Value != dest.Value)
+            return (false, $"{what} count mismatch");
+
+        return (true, null);
+    }
+
+    /// <summary>
+    /// Instance-level comparison by SOP Instance UID. Compares identity rather than magnitude:
+    /// equal counts do not prove the destination holds the same instances, and an empty source
+    /// enumeration proves nothing at all.
+    /// </summary>
+    private static (bool ok, string? reason) CompareInstanceUids(IReadOnlySet<string> source, IReadOnlySet<string> dest)
+    {
+        if (source.Count == 0)
+            return (false, "source returned 0 instances - cannot verify");
+
+        var missing = source.Count(uid => !dest.Contains(uid));
+        if (missing > 0)
+            return (false, $"{missing} of {source.Count} instances missing on destination");
+
+        return (true, null);
     }
 
     private static VerifyLevel ParseLevel(string level) =>

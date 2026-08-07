@@ -27,8 +27,16 @@
 
 [CmdletBinding()]
 param(
-    [string] $InstallDir          = "C:\Services\DicomMigration",
+    # Under Program Files rather than a folder off the root of C:. A directory created directly
+    # under C:\ inherits an inherit-only Modify ACE for Authenticated Users, so any logged-on user
+    # could replace the service binary -- and this service runs as LocalSystem with auto-restart,
+    # making that a straight local privilege escalation to SYSTEM. The ACL is also hardened
+    # explicitly below, so a caller who overrides this path is still protected.
+    [string] $InstallDir          = (Join-Path $env:ProgramFiles "DICOM Migration Server"),
     [string] $ServiceName         = "DicomMigration",
+    # Overwrite the settings table from the parameters above even when a database already exists.
+    # Off by default so a binaries-only upgrade cannot silently repoint the live AE configuration.
+    [switch] $ReseedSettings,
     [string] $ServiceDisplayName  = "DICOM Migration Server",
     [int]    $Port                = 5080,
 
@@ -111,6 +119,15 @@ if ($existing) {
 # --- 2. Stage application binaries -------------------------------------------------------
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 
+# Lock down the install directory regardless of where it was placed. Inheritance is removed and
+# an explicit DACL applied: SYSTEM and Administrators get Full, and no entry is granted to Users
+# or Authenticated Users. Without this, a directory under a permissive parent lets an unprivileged
+# local user overwrite DicomMigration.exe (or a runtime DLL beside it) and have the SCM execute it
+# as LocalSystem on the next restart. It also keeps the PHI in data\ off general local read.
+Write-Step "Hardening ACL on $InstallDir ..."
+& icacls $InstallDir /inheritance:r /grant "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "Failed to set ACL on $InstallDir (icacls exit $LASTEXITCODE)." }
+
 # Prefer a pre-published payload shipped next to this script (an "app" folder).
 if (-not $PayloadDir) {
     $candidate = Join-Path $scriptDir "app"
@@ -176,10 +193,22 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllText($prodPath, $json, $utf8NoBom)
 
 # --- 4. Initialize and preconfigure the database -----------------------------------------
-Write-Step "Initializing database and seeding settings (init-db) ..."
-$env:DOTNET_ENVIRONMENT = "Production"
-& $exePath init-db
-if ($LASTEXITCODE -ne 0) { throw "init-db failed with exit code $LASTEXITCODE" }
+# init-db force-reseeds the settings table from the parameters above. On an upgrade that would
+# silently repoint the live source/destination AEs back to this script's defaults, so an operator
+# re-running the installer just to drop in new binaries could send the next migration to the wrong
+# PACS. Skip the reseed when a database already exists unless -ReseedSettings is passed.
+$dbPath = Join-Path $InstallDir "data\migration.db"
+if ((Test-Path $dbPath) -and -not $ReseedSettings) {
+    # Skipping init-db entirely is safe: the service calls Database.Initialize() on every start,
+    # so the schema is still created/updated without touching the settings table.
+    Write-Step "Existing database found; keeping its settings (pass -ReseedSettings to overwrite)."
+}
+else {
+    Write-Step "Initializing database and seeding settings (init-db) ..."
+    $env:DOTNET_ENVIRONMENT = "Production"
+    & $exePath init-db
+    if ($LASTEXITCODE -ne 0) { throw "init-db failed with exit code $LASTEXITCODE" }
+}
 
 # --- 5. Register and start the service ---------------------------------------------------
 Write-Step "Registering Windows service ..."

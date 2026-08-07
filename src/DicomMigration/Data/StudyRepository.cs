@@ -37,8 +37,12 @@ public sealed class StudyRepository
                  study_description     = excluded.study_description,
                  accession_number      = excluded.accession_number,
                  modalities            = excluded.modalities,
-                 source_series_count   = excluded.source_series_count,
-                 source_instance_count = excluded.source_instance_count,
+                 -- COALESCE so a later inventory pass cannot blank a count we already have.
+                 -- These come from OPTIONAL C-FIND keys the source may omit on any given query;
+                 -- overwriting a known count with NULL would make the study unverifiable, and
+                 -- verification treats an unknown source count as a failure to prove anything.
+                 source_series_count   = COALESCE(excluded.source_series_count, source_series_count),
+                 source_instance_count = COALESCE(excluded.source_instance_count, source_instance_count),
                  updated_at            = excluded.updated_at;",
             new
             {
@@ -136,6 +140,26 @@ public sealed class StudyRepository
         return await conn.ExecuteAsync(
             "UPDATE studies SET attempts = 0, last_error = NULL, updated_at = @now WHERE study_instance_uid IN @ids",
             new { ids, now = Now() });
+    }
+
+    /// <summary>
+    /// Reclaims studies left in <c>move_pending</c> by a process that stopped mid-move.
+    ///
+    /// That status is written before the C-MOVE and rewritten after it returns, so an interrupted
+    /// process (a crash, or an installer stopping the service to upgrade binaries) leaves rows
+    /// stranded: no phase selects <c>move_pending</c>, so migrate, retry and verify would all skip
+    /// them forever and the dashboard would show them as neither failed nor outstanding. They are
+    /// moved to <c>move_failed</c> so Retry picks them up, and attempts is reset so the retry cap
+    /// does not immediately exclude them for an interruption that was not their fault.
+    /// </summary>
+    public async Task<int> ReclaimInterruptedMovesAsync()
+    {
+        using var conn = _db.Open();
+        return await conn.ExecuteAsync(
+            "UPDATE studies SET status = @failed, attempts = 0, " +
+            "last_error = 'Interrupted: service stopped mid-move', updated_at = @now " +
+            "WHERE status = @pending",
+            new { failed = MigrationStatus.MoveFailed, pending = MigrationStatus.MovePending, now = Now() });
     }
 
     public async Task LogEventAsync(string? studyUid, string level, string message)
