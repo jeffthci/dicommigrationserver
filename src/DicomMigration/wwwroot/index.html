@@ -117,6 +117,10 @@
     </div>
     <div class="progress-track"><div id="progress-fill"></div></div>
     <div id="current-item" class="current-item"></div>
+    <!-- Phase-level outcome. Rendered unconditionally: it used to share a slot with the
+         progress counter and was only shown when total was 0, so a phase that failed after
+         setting Total (which all of them do) reported the error nowhere. -->
+    <div id="phase-message" class="phase-message" hidden></div>
   </section>
 
   <section class="counts" id="counts"></section>
@@ -136,6 +140,11 @@
         </select>
       </label>
       <button id="refresh">Refresh</button>
+      <span class="table-paging">
+        <button id="page-prev" disabled>&larr; Prev</button>
+        <span id="page-info" class="page-info"></span>
+        <button id="page-next" disabled>Next &rarr;</button>
+      </span>
     </div>
     <table id="studies">
       <thead>

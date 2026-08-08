@@ -58,6 +58,10 @@ function setConnected(ok, detail) {
   }
 }
 
+// Latest per-status counts, kept so the table can report "showing X of Y" without another call.
+let lastCounts = {};
+let isBusy = false;
+
 async function refreshStatus() {
   let data;
   try {
@@ -70,14 +74,39 @@ async function refreshStatus() {
     return;
   }
   const s = data.state;
+  lastCounts = data.counts || {};
+  isBusy = !!data.busy;
 
   $("#phase-label").textContent = s.phase + (s.isRunning ? " (running)" : "");
-  $("#progress-text").textContent = s.total > 0 ? `${s.processed}/${s.total} — ok ${s.succeeded}, fail ${s.failed}` : (s.message || "");
+  $("#progress-text").textContent = s.total > 0 ? `${s.processed}/${s.total} — ok ${s.succeeded}, fail ${s.failed}` : "";
   $("#progress-fill").style.width = pct(s.processed, s.total) + "%";
   $("#current-item").textContent = s.currentItem ? "current: " + s.currentItem : "";
 
-  // Disable phase buttons while busy. Connections must not change mid-run either.
-  ["btn-inventory", "btn-migrate", "btn-verify", "btn-retry", "c-save"].forEach((id) => { $("#" + id).disabled = data.busy; });
+  // Always render the phase message. It previously shared a slot with the progress counter and
+  // only appeared when total was 0 -- but every phase sets Total before it can fail, so a phase
+  // that aborted mid-run showed nothing at all.
+  const msg = $("#phase-message");
+  if (s.message) {
+    msg.hidden = false;
+    msg.textContent = s.message;
+    msg.className = "phase-message" + (/^error/i.test(s.message) ? " is-error"
+      : /cancel/i.test(s.message) ? " is-warn" : "");
+  } else {
+    msg.hidden = true;
+    msg.textContent = "";
+  }
+
+  // Disable phase buttons while busy. Connections must not change mid-run either. Per-row Push
+  // and Verify are included: they share the phase gate, so clicking one mid-run just 409s.
+  ["btn-inventory", "btn-migrate", "btn-verify", "btn-retry"].forEach((id) => { $("#" + id).disabled = data.busy; });
+  // Save stays disabled while busy OR until settings have actually loaded -- this poll runs every
+  // 1.5s and would otherwise re-enable it and undo the failed-load guard.
+  $("#c-save").disabled = data.busy || !settingsLoaded;
+  $("#t-save").disabled = data.busy || !settingsLoaded;
+  document.querySelectorAll(".push-btn, .verify-btn").forEach((b) => { b.disabled = data.busy; });
+
+  // Cancel is the inverse: only meaningful while something is running.
+  $("#btn-cancel").disabled = !data.busy;
 
   renderSummary(data.counts);
   renderCounts(data.counts);
@@ -111,13 +140,51 @@ function renderCounts(counts) {
   }
 }
 
+const PAGE_SIZE = 200;
+let pageOffset = 0;
+let studiesSeq = 0;      // newest-wins guard against out-of-order responses
+let studiesInFlight = false;
+let lastStudiesKey = null;
+
+// Total rows matching the current filter, derived from the status counts we already poll.
+function filteredTotal(status) {
+  if (status) return lastCounts[status] || 0;
+  return Object.values(lastCounts).reduce((a, b) => a + b, 0);
+}
+
 async function refreshStudies() {
+  // Skip a scheduled poll while one is still outstanding, and drop any response that is not the
+  // newest: refreshStudies is driven by the interval, the filter's change handler, the Refresh
+  // button and the paging buttons, so a slow earlier response could otherwise land last and
+  // repaint the table with rows that contradict the current filter.
+  if (studiesInFlight) return;
+  const seq = ++studiesSeq;
   const status = $("#status-filter").value;
+
   let rows;
+  studiesInFlight = true;
   try {
-    rows = await api("/studies?limit=200" + (status ? "&status=" + status : ""));
-  } catch { return; } // transient failure during polling; keep the current table
+    rows = await api(`/studies?limit=${PAGE_SIZE}&offset=${pageOffset}` + (status ? "&status=" + status : ""));
+  } catch {
+    return; // transient failure during polling; keep the current table
+  } finally {
+    studiesInFlight = false;
+  }
+  if (seq !== studiesSeq) return;
+  if (status !== $("#status-filter").value) return; // filter changed while in flight
+
+  renderPaging(status, rows.length);
+
+  // Skip the rebuild when nothing changed. The table is repainted every 5s, and clearing innerHTML
+  // destroys focus, text selection (an operator copying a UID) and any in-progress interaction.
+  const key = JSON.stringify(rows) + "|" + pageOffset + "|" + status;
+  if (key === lastStudiesKey) return;
+  lastStudiesKey = key;
+
   const tbody = $("#studies tbody");
+  const activeId = document.activeElement && document.activeElement.dataset
+    ? document.activeElement.dataset.rowkey : null;
+
   tbody.innerHTML = "";
   for (const r of rows) {
     const tr = document.createElement("tr");
@@ -137,34 +204,70 @@ async function refreshStudies() {
     // the UID instead of storing it in an attribute. PACS-supplied values never reach the parser
     // this way, so this stays safe regardless of what esc() does.
     const actions = tr.querySelector(".row-actions");
-    actions.appendChild(actionButton("Push", "push-btn", "/move-study", r.studyInstanceUid));
-    actions.appendChild(actionButton("Verify", "verify-btn", "/verify-study", r.studyInstanceUid));
+    actions.appendChild(actionButton("Push", "push-btn", "/move-study", r));
+    actions.appendChild(actionButton("Verify", "verify-btn", "/verify-study", r));
 
     tbody.appendChild(tr);
   }
+
+  // Restore focus if the row the operator was on still exists after the repaint.
+  if (activeId) {
+    const restore = tbody.querySelector(`[data-rowkey="${CSS.escape(activeId)}"]`);
+    if (restore) restore.focus();
+  }
 }
 
-function actionButton(label, cls, path, uid) {
+function renderPaging(status, shown) {
+  const total = filteredTotal(status);
+  const first = total === 0 ? 0 : pageOffset + 1;
+  const last = pageOffset + shown;
+
+  $("#page-info").textContent = total > 0
+    ? `showing ${first}-${last} of ${total}`
+    : `showing ${shown}`;
+
+  $("#page-prev").disabled = pageOffset <= 0;
+  $("#page-next").disabled = shown < PAGE_SIZE || last >= total;
+}
+
+function actionButton(label, cls, path, r) {
   const b = document.createElement("button");
   b.className = cls;
   b.textContent = label;
-  b.addEventListener("click", () => studyAction(path, uid, b));
+  b.disabled = isBusy;
+  // Stable key for focus restoration across the 5s repaint.
+  b.dataset.rowkey = cls + ":" + r.studyInstanceUid;
+  // A study that already verified rarely needs pushing again; demote rather than hide, since
+  // re-pushing is occasionally the right call.
+  if (cls === "push-btn" && r.status === "verified") b.classList.add("demoted");
+  b.addEventListener("click", () => studyAction(path, r, b));
   return b;
 }
 
 // Per-study push (C-MOVE) or re-verify (read-only C-FIND). Both share the phase gate with the
 // bulk phases, so they return 409 while a migration is running rather than competing with it.
-async function studyAction(path, uid, btn) {
+async function studyAction(path, r, btn) {
+  // Push moves patient data to the destination PACS, and the table re-sorts by updated_at every
+  // 5s so rows shift under the cursor. Naming the study in the prompt means a mis-click is
+  // caught before anything transfers. Verify is read-only, so it needs no confirmation.
+  if (path === "/move-study") {
+    const who = [r.patientName, r.patientId].filter(Boolean).join(" / ") || "(unknown patient)";
+    const what = [r.studyDate, r.modalities, r.studyDescription].filter(Boolean).join(" ");
+    if (!confirm(`Push this study to the destination PACS?\n\n${who}\n${what}\nAccession: ${r.accessionNumber || "-"}\nCurrent status: ${r.status}`)) {
+      return;
+    }
+  }
+
   const label = btn.textContent;
   btn.disabled = true;
   btn.textContent = "...";
   try {
-    const r = await api(path, {
+    const res = await api(path, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ studyInstanceUid: uid }),
+      body: JSON.stringify({ studyInstanceUid: r.studyInstanceUid }),
     });
-    if (r && r.error) alert(r.error);
+    if (res && res.error) alert(res.error);
   } catch (e) {
     alert(e.message);
   } finally {
@@ -172,15 +275,28 @@ async function studyAction(path, uid, btn) {
     btn.textContent = label;
   }
   refreshStatus();
+  lastStudiesKey = null; // force a repaint so the new status shows immediately
   refreshStudies();
 }
+
+let lastEventsKey = null;
 
 async function refreshEvents() {
   let events;
   try {
     events = await api("/events?limit=80");
   } catch { return; } // transient failure during polling
+
+  // Same no-op guard as the study table: rebuilding this list every 5s discarded the operator's
+  // scroll position, so reading back through the log was impossible while a phase was running.
+  const key = JSON.stringify(events);
+  if (key === lastEventsKey) return;
+  lastEventsKey = key;
+
   const ul = $("#event-list");
+  const prevScroll = ul.scrollTop;
+  const wasAtTop = prevScroll <= 2;
+
   ul.innerHTML = "";
   for (const e of events) {
     const li = document.createElement("li");
@@ -189,6 +305,10 @@ async function refreshEvents() {
     li.innerHTML = `<span class="ts">${ts}</span>${esc(e.message)}`;
     ul.appendChild(li);
   }
+
+  // Keep the reader where they were. If they were at the top (newest first), stay pinned there
+  // so new entries remain visible.
+  ul.scrollTop = wasAtTop ? 0 : prevScroll;
 }
 
 // Escapes for BOTH text and attribute context. Quotes matter: study metadata (patient name,
@@ -211,6 +331,21 @@ async function loadConfig() {
   } catch { /* ignore */ }
 }
 
+// True once the forms hold real server values. Save is blocked until then: the forms otherwise
+// sit at their HTML defaults (empty numbers, and Verify.Level at its first option, "Study"), and
+// Save posts every field -- so saving after a failed load silently downgraded verification depth
+// and reset the throttle to fallback values the operator never chose.
+let settingsLoaded = false;
+
+function setSettingsAvailable(ok, detail) {
+  settingsLoaded = ok;
+  $("#t-save").disabled = !ok;
+  $("#c-save").disabled = !ok;
+  if (!ok) {
+    flashSaved("Settings failed to load - Save disabled. " + (detail || ""), "#t-saved", 0);
+  }
+}
+
 // Load current settings into the throttle + connection forms (once, so we don't clobber edits).
 async function loadSettings() {
   try {
@@ -231,7 +366,10 @@ async function loadSettings() {
     $("#c-dst-ae").value = s.destination.aeTitle;
     $("#c-dst-host").value = s.destination.host;
     $("#c-dst-port").value = s.destination.port;
-  } catch { /* ignore */ }
+    setSettingsAvailable(true);
+  } catch (e) {
+    setSettingsAvailable(false, e.message);
+  }
 }
 
 async function saveConnections() {
@@ -248,6 +386,10 @@ async function saveConnections() {
     await api("/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     flashSaved("Saved", "#c-saved");
     loadConfig();
+    // Re-read so the form shows what the server actually stored, not what was typed. Save posts
+    // every field, so without this the form stays a stale snapshot that would overwrite any
+    // change made elsewhere on the next Save.
+    loadSettings();
   } catch (e) {
     flashSaved("Error: " + e.message, "#c-saved");
   }
@@ -298,23 +440,51 @@ async function saveSettings() {
     await api("/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     flashSaved("Saved", "#t-saved");
     loadConfig();
+    loadSettings();
   } catch (e) {
     flashSaved("Error: " + e.message, "#t-saved");
   }
 }
 
-function flashSaved(msg, sel) {
+// ms = 0 keeps the message up (used for states the operator must not miss, like a failed load).
+// Cancel aborts a running phase. Previously it fired and forgot: the promise was never awaited
+// and had no catch, so a failure surfaced only as an unhandled rejection in devtools.
+async function cancelPhase() {
+  if (!confirm("Cancel the running phase?\n\nStudies already transferred are unaffected, but the phase will stop where it is.")) {
+    return;
+  }
+  const btn = $("#btn-cancel");
+  btn.disabled = true;
+  try {
+    await api("/cancel", { method: "POST" });
+  } catch (e) {
+    alert("Cancel failed: " + e.message);
+  }
+  refreshStatus();
+}
+
+function flashSaved(msg, sel, ms) {
   const el = $(sel || "#t-saved");
   el.textContent = msg;
-  setTimeout(() => { el.textContent = ""; }, 3000);
+  if (ms !== 0) setTimeout(() => { el.textContent = ""; }, ms || 3000);
 }
 
 // Wire up controls.
 document.querySelectorAll(".phase-bar button[data-phase]").forEach((b) =>
   b.addEventListener("click", () => postPhase(b.dataset.phase)));
-$("#btn-cancel").addEventListener("click", () => api("/cancel", { method: "POST" }));
-$("#refresh").addEventListener("click", () => { refreshStudies(); refreshEvents(); });
-$("#status-filter").addEventListener("change", refreshStudies);
+$("#btn-cancel").addEventListener("click", cancelPhase);
+$("#refresh").addEventListener("click", () => { lastStudiesKey = null; refreshStudies(); refreshEvents(); });
+// Reset to the first page when the filter changes, or the view can land past the end of a
+// smaller result set and show nothing.
+$("#status-filter").addEventListener("change", () => { pageOffset = 0; refreshStudies(); });
+$("#page-prev").addEventListener("click", () => {
+  pageOffset = Math.max(0, pageOffset - PAGE_SIZE);
+  refreshStudies();
+});
+$("#page-next").addEventListener("click", () => {
+  pageOffset += PAGE_SIZE;
+  refreshStudies();
+});
 $("#t-save").addEventListener("click", saveSettings);
 $("#c-save").addEventListener("click", saveConnections);
 $("#c-src-test").addEventListener("click", () => testConnection("source"));

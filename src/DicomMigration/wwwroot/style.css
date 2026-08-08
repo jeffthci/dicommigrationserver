@@ -118,6 +118,17 @@ button.warn { border-color: var(--warn); color: var(--warn); }
   border-radius: 4px; margin: 0 0 14px 0;
 }
 
+.phase-message { margin-top: 8px; font-size: 12px; color: var(--muted); }
+.phase-message.is-error { color: var(--err); font-weight: 600; }
+.phase-message.is-warn  { color: var(--warn); }
+
+.table-paging { display: inline-flex; gap: 8px; align-items: center; margin-left: auto; }
+.table-paging button { font-size: 11px; padding: 3px 9px; }
+.page-info { font-size: 11px; color: var(--muted); min-width: 130px; text-align: center; }
+
+.push-btn.demoted { opacity: 0.5; }
+.push-btn.demoted:hover:not(:disabled) { opacity: 1; }
+
 .row-actions { white-space: nowrap; }
 .push-btn, .verify-btn { font-size: 11px; padding: 3px 9px; }
 .verify-btn { margin-left: 5px; }
