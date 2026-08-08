@@ -412,8 +412,21 @@ public sealed class MigrationOrchestrator
         await _repo.SetStatusAsync(study.StudyInstanceUid, MigrationStatus.MovePending);
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        var result = await _move.MoveStudyAsync(study.StudyInstanceUid, ct,
-            (completed, remaining, failed) => slot.Report(completed, remaining, failed));
+        MoveResult result;
+        try
+        {
+            result = await _move.MoveStudyAsync(study.StudyInstanceUid, ct,
+                (completed, remaining, failed) => slot.Report(completed, remaining, failed));
+        }
+        catch (OperationCanceledException)
+        {
+            // Put the study back where Migrate will pick it up again, rather than leaving it in
+            // move_pending until the next restart's reclaim sweep. Cancelling is a normal operator
+            // action, so it must not look like a failure or need a restart to become retryable.
+            await _repo.SetStatusAsync(study.StudyInstanceUid, MigrationStatus.Inventoried,
+                "Interrupted: migration cancelled mid-move");
+            throw;
+        }
         sw.Stop();
 
         var status = result.Success ? MigrationStatus.Moved : MigrationStatus.MoveFailed;

@@ -108,6 +108,15 @@ public sealed class DicomMoveService
         {
             return MoveResult.Fail($"C-MOVE timed out after {settings.Move.MoveTimeoutMinutes} min");
         }
+        catch (OperationCanceledException)
+        {
+            // The operator cancelled. Let this propagate instead of falling into the generic
+            // handler below, which would record a permanent move_failed with an empty DIMSE
+            // status -- a study that was transferring fine would be indistinguishable from one
+            // the source rejected. Measured during the parallelism test: every cancelled run
+            // produced exactly one bogus "failure" per in-flight slot.
+            throw;
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "C-MOVE association failed for {Uid}", studyInstanceUid);
