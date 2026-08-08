@@ -45,6 +45,59 @@ function inventoryFilter() {
 
 function pct(p, t) { return t > 0 ? Math.round((p / t) * 100) : 0; }
 
+// ---- Formatting helpers: phrasing rules live here, not scattered through the render code ----
+
+function fmtDuration(ms) {
+  if (!isFinite(ms) || ms < 0) return "-";
+  const s = Math.floor(ms / 1000);
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  if (h > 0) return `${h}h ${String(m).padStart(2, "0")}m`;
+  if (m > 0) return `${m}m ${String(sec).padStart(2, "0")}s`;
+  return `${sec}s`;
+}
+
+// Separators on large counts only: five-digit unseparated numbers are misread at a glance,
+// but "1,285 studies" reads worse than "1285" for small values.
+function fmtCount(n) { return n >= 1000 ? n.toLocaleString("en-US") : String(n); }
+
+const PHASE_VERB = {
+  idle: "Idle",
+  inventory: "Inventorying source",
+  migrate: "Migrating",
+  retry: "Retrying failures",
+  verify: "Verifying",
+  "move-study": "Pushing one study",
+  "verify-study": "Verifying one study",
+};
+
+// Rolling window of completion samples, used for throughput and ETA. A whole-run average is
+// misleading after a slow patch; a short window tracks what is happening now.
+let rateSamples = [];
+let phaseKey = null;
+
+function updateRate(state) {
+  const key = state.phase + "|" + (state.startedAt || "");
+  if (key !== phaseKey) { phaseKey = key; rateSamples = []; }
+  if (!state.isRunning) return;
+
+  const now = Date.now();
+  const last = rateSamples[rateSamples.length - 1];
+  if (!last || last.processed !== state.processed) {
+    rateSamples.push({ t: now, processed: state.processed });
+  }
+  // Keep ~2 minutes of samples.
+  while (rateSamples.length > 2 && now - rateSamples[0].t > 120000) rateSamples.shift();
+}
+
+function ratePerMin() {
+  if (rateSamples.length < 2) return null;
+  const a = rateSamples[0], b = rateSamples[rateSamples.length - 1];
+  const mins = (b.t - a.t) / 60000;
+  const done = b.processed - a.processed;
+  if (mins <= 0 || done <= 0) return null;
+  return done / mins;
+}
+
 // Banner shown when polling fails, so "the service is down" never reads as "still running".
 function setConnected(ok, detail) {
   const el = $("#conn-banner");
@@ -61,6 +114,8 @@ function setConnected(ok, detail) {
 // Latest per-status counts, kept so the table can report "showing X of Y" without another call.
 let lastCounts = {};
 let isBusy = false;
+let lastRev = -1;
+let lastState = null;
 
 async function refreshStatus() {
   let data;
@@ -74,10 +129,20 @@ async function refreshStatus() {
     return;
   }
   const s = data.state;
-  lastCounts = data.counts || {};
   isBusy = !!data.busy;
+  lastState = s;
 
-  $("#phase-label").textContent = s.phase + (s.isRunning ? " (running)" : "");
+  // Skip the whole render when the server state has not advanced. This is what makes a
+  // sub-second poll cheap, and it keeps text selection alive between ticks.
+  if (s.rev === lastRev && !s.isRunning) return;
+  lastRev = s.rev;
+
+  updateRate(s);
+  renderActivity(s);
+
+  const label = $("#phase-label");
+  label.textContent = (PHASE_VERB[s.phase] || s.phase) + (s.isRunning ? "…" : "");
+  label.title = s.phase; // raw slug kept for support
   $("#progress-text").textContent = s.total > 0 ? `${s.processed}/${s.total} — ok ${s.succeeded}, fail ${s.failed}` : "";
   $("#progress-fill").style.width = pct(s.processed, s.total) + "%";
   $("#current-item").textContent = s.currentItem ? "current: " + s.currentItem : "";
@@ -108,8 +173,77 @@ async function refreshStatus() {
   // Cancel is the inverse: only meaningful while something is running.
   $("#btn-cancel").disabled = !data.busy;
 
-  renderSummary(data.counts);
-  renderCounts(data.counts);
+}
+
+// The live activity block: one row per in-flight DICOM operation, plus the derived strip.
+function renderActivity(s) {
+  const rows = $("#activity-rows");
+  const panel = $("#activity");
+
+  panel.classList.toggle("is-running", !!s.isRunning);
+  panel.classList.toggle("is-failed", !s.isRunning && s.failed > 0);
+
+  // Inventory chunking: the query phase has no per-study granularity, so show the window.
+  const chunkLine = s.chunkCount > 1
+    ? `<div class="act-row"><span class="act-op">C-FIND</span> window ${s.chunkIndex} of ${s.chunkCount} <span class="act-mono">${esc(s.chunkRange || "")}</span></div>`
+    : "";
+
+  const opRows = (s.inFlight || []).map((o) => {
+    const who = o.label ? esc(o.label) : esc(o.studyInstanceUid);
+    // Sub-operation counters only exist for C-MOVE, and only once the peer reports them.
+    const sub = o.subOpsCompleted > 0 || o.subOpsRemaining > 0
+      ? ` — ${fmtCount(o.subOpsCompleted)}${o.subOpsRemaining >= 0 ? " of " + fmtCount(o.subOpsCompleted + o.subOpsRemaining) : ""} instances`
+        + (o.subOpsFailed > 0 ? `, <span class="act-fail">${o.subOpsFailed} failed</span>` : "")
+      : "";
+    const stalled = isStalled(o) ? ` <span class="act-stall">no progress for ${fmtDuration(Date.now() - Date.parse(o.lastProgressAtUtc || o.startedAtUtc))}</span>` : "";
+    return `<div class="act-row">
+      <span class="act-op">${esc(o.operation)}</span>
+      <span class="act-arrow">→</span>
+      <span class="act-mono">${esc(o.peerAe)}@${esc(o.peerHost)}:${o.peerPort}</span>
+      <span class="act-who">${who}</span>${sub}${stalled}
+    </div>`;
+  }).join("");
+
+  rows.innerHTML = chunkLine + opRows;
+  rows.hidden = !(chunkLine || opRows);
+
+  // Derived strip.
+  const bits = [];
+  if (s.startedAt) {
+    const end = s.isRunning ? Date.now() : (s.finishedAt ? Date.parse(s.finishedAt) : Date.now());
+    bits.push("elapsed " + fmtDuration(end - Date.parse(s.startedAt)));
+  }
+  const rate = ratePerMin();
+  if (rate) {
+    bits.push(rate.toFixed(1) + "/min");
+    const left = s.total - s.processed;
+    if (s.isRunning && left > 0) {
+      bits.push("~" + fmtDuration((left / rate) * 60000) + " left");
+    }
+  }
+  if (s.instancesTransferred > 0) bits.push(fmtCount(s.instancesTransferred) + " instances");
+
+  const derived = $("#activity-derived");
+  derived.textContent = bits.join(" · ");
+  derived.hidden = bits.length === 0;
+}
+
+// A hung association looks identical to a slow one -- the counters just stop. Anything past this
+// with no movement is worth flagging rather than leaving the operator to guess.
+const STALL_MS = 45000;
+function isStalled(o) {
+  const t = Date.parse(o.lastProgressAtUtc || o.startedAtUtc);
+  return isFinite(t) && Date.now() - t > STALL_MS;
+}
+
+// Counts come from the slow lane now: /api/status is deliberately database-free so it can be
+// polled sub-second without dragging a GROUP BY over the studies table along with it.
+async function refreshCounts() {
+  try {
+    lastCounts = await api("/counts");
+  } catch { return; }
+  renderSummary(lastCounts);
+  renderCounts(lastCounts);
 }
 
 // Top-of-page headline counters derived from the per-status counts.
@@ -494,7 +628,13 @@ $("#c-dst-test").addEventListener("click", () => testConnection("destination"));
 loadConfig();
 loadSettings();
 refreshStatus();
+refreshCounts();
 refreshStudies();
 refreshEvents();
-setInterval(refreshStatus, 1500);
-setInterval(() => { refreshStudies(); refreshEvents(); }, 5000);
+
+// Fast lane: memory-only state, so this can run sub-second and the activity block reads as live.
+setInterval(refreshStatus, 600);
+// Slow lane: everything that touches SQLite.
+setInterval(() => { refreshCounts(); refreshStudies(); refreshEvents(); }, 5000);
+// Elapsed/ETA tick independently of the poll so the clock does not appear to stutter.
+setInterval(() => { if (isBusy && lastState) renderActivity(lastState); }, 1000);

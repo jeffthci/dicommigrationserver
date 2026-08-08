@@ -175,13 +175,24 @@ public sealed class DicomQueryService
     /// STUDY-level C-FIND against the source. Returns one record per study with patient
     /// metadata and source-side series/instance counts.
     /// </summary>
-    public async Task<IReadOnlyList<StudyRecord>> InventorySourceAsync(InventoryFilter filter, CancellationToken ct)
+    /// <param name="onChunk">
+    /// (index, count, range, runningTotal) raised as each date window starts. Without this the
+    /// dashboard shows nothing at all for the entire inventory C-FIND -- the single longest
+    /// operation in a migration against a large archive.
+    /// </param>
+    public async Task<IReadOnlyList<StudyRecord>> InventorySourceAsync(
+        InventoryFilter filter,
+        CancellationToken ct,
+        Action<int, int, string?, int>? onChunk = null)
     {
         var settings = _settings.Current;
         var chunks = DateChunker.Split(filter.StudyDateRange, settings.Inventory.ChunkDays);
 
         if (chunks.Count <= 1)
+        {
+            onChunk?.Invoke(1, 1, filter.StudyDateRange, 0);
             return await InventoryChunkAsync(filter, filter.StudyDateRange, ct);
+        }
 
         // Chunked: one short association per date window, paced by DelayBetweenChunksMs, so a
         // large archive is walked in steps instead of held open in a single long query.
@@ -192,6 +203,7 @@ public sealed class DicomQueryService
         for (var i = 0; i < chunks.Count; i++)
         {
             ct.ThrowIfCancellationRequested();
+            onChunk?.Invoke(i + 1, chunks.Count, chunks[i], all.Count);
 
             var chunk = await InventoryChunkAsync(filter, chunks[i], ct);
 

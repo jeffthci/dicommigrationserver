@@ -36,7 +36,17 @@ public sealed class DicomMoveService
         _logger = logger;
     }
 
-    public async Task<MoveResult> MoveStudyAsync(string studyInstanceUid, CancellationToken ct)
+    /// <param name="onProgress">
+    /// (completed, remaining, failed) sub-operation counts, raised as the source reports progress
+    /// so the dashboard can show a large study advancing instance-by-instance instead of appearing
+    /// frozen for minutes. These numbers already arrived on every pending response and were
+    /// previously discarded into a Debug log that the shipped configuration suppresses.
+    /// Raised at most once a second per study, plus once on the final response.
+    /// </param>
+    public async Task<MoveResult> MoveStudyAsync(
+        string studyInstanceUid,
+        CancellationToken ct,
+        Action<int, int, int>? onProgress = null)
     {
         var settings = _settings.Current;
         var destinationAe = settings.Destination.AeTitle;
@@ -46,6 +56,10 @@ public sealed class DicomMoveService
 
         var request = new DicomCMoveRequest(destinationAe, studyInstanceUid);
 
+        // A busy SCP can emit a pending response per instance. Coalescing keeps a chatty peer from
+        // spinning the orchestrator's state lock on a large study.
+        var lastRaised = DateTime.MinValue;
+
         request.OnResponseReceived += (req, response) =>
         {
             // Pending responses carry running tallies; the final response carries the totals.
@@ -53,14 +67,27 @@ public sealed class DicomMoveService
             failed = response.Failures;
             warnings = response.Warnings;
 
-            if (response.Status.State != DicomState.Pending)
+            var isFinal = response.Status.State != DicomState.Pending;
+            if (isFinal)
             {
                 finalStatus = response.Status;
                 if (response.Status.State != DicomState.Success)
                     failureComment = response.Status.Description;
             }
 
-            _logger.LogDebug(
+            if (onProgress is not null)
+            {
+                var now = DateTime.UtcNow;
+                if (isFinal || now - lastRaised >= TimeSpan.FromSeconds(1))
+                {
+                    lastRaised = now;
+                    onProgress(completed, response.Remaining, failed);
+                }
+            }
+
+            // Information, not Debug: these are the decision points for diagnosing a slow or
+            // partial transfer, and the shipped Serilog configuration suppresses Debug.
+            _logger.LogInformation(
                 "C-MOVE {Uid}: status={Status} remaining={Remaining} completed={Completed} failed={Failed} warnings={Warnings}",
                 studyInstanceUid, response.Status, response.Remaining, completed, failed, warnings);
         };

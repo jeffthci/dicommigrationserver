@@ -111,7 +111,8 @@ public sealed class MigrationOrchestrator
         try
         {
             await body(cts.Token);
-            UpdateState(s => s.Message ??= "Completed");
+            // "Completed" alone reads as success even when studies failed; say which it was.
+            UpdateState(s => s.Message ??= s.Failed > 0 ? $"Completed with {s.Failed} failures" : "Completed");
         }
         catch (OperationCanceledException)
         {
@@ -129,6 +130,13 @@ public sealed class MigrationOrchestrator
             {
                 s.IsRunning = false;
                 s.FinishedAt = DateTime.UtcNow.ToString("o");
+                // Nothing is in flight once the phase returns; leaving stale entries would show
+                // the dashboard a study that is no longer being worked on.
+                s.InFlight = new List<ActiveOperation>();
+                s.CurrentItem = null;
+                s.ChunkIndex = 0;
+                s.ChunkCount = 0;
+                s.ChunkRange = null;
             });
             lock (_stateLock)
             {
@@ -141,8 +149,87 @@ public sealed class MigrationOrchestrator
 
     private void UpdateState(Action<MigrationState> mutate)
     {
-        lock (_stateLock) mutate(_state);
+        lock (_stateLock)
+        {
+            mutate(_state);
+            _state.Rev++;
+            _state.LastProgressAtUtc = DateTime.UtcNow.ToString("o");
+        }
     }
+
+    // ---- Live activity tracking -------------------------------------------------------------
+
+    /// <summary>
+    /// Adds an in-flight operation and returns a handle that updates or removes it. Slots are
+    /// keyed by StudyInstanceUID so concurrent movers each own their own entry instead of
+    /// fighting over one CurrentItem string.
+    /// </summary>
+    private ActivitySlot BeginActivity(string studyUid, string? label, string operation, DicomNode peer)
+    {
+        var op = new ActiveOperation(
+            studyUid, label, operation, peer.AeTitle, peer.Host, peer.Port,
+            DateTime.UtcNow.ToString("o"), 0, -1, 0, null);
+
+        UpdateState(s =>
+        {
+            s.InFlight = s.InFlight.Where(x => x.StudyInstanceUid != studyUid).Append(op).ToList();
+            s.CurrentItem = studyUid; // kept for API compatibility
+        });
+
+        return new ActivitySlot(this, studyUid);
+    }
+
+    private void UpdateActivity(string studyUid, int completed, int remaining, int failed, long instanceDelta)
+    {
+        UpdateState(s =>
+        {
+            s.InFlight = s.InFlight
+                .Select(x => x.StudyInstanceUid == studyUid
+                    ? x with
+                    {
+                        SubOpsCompleted = completed,
+                        SubOpsRemaining = remaining,
+                        SubOpsFailed = failed,
+                        LastProgressAtUtc = DateTime.UtcNow.ToString("o")
+                    }
+                    : x)
+                .ToList();
+
+            if (instanceDelta > 0) s.InstancesTransferred += instanceDelta;
+        });
+    }
+
+    private void EndActivity(string studyUid)
+    {
+        UpdateState(s =>
+        {
+            s.InFlight = s.InFlight.Where(x => x.StudyInstanceUid != studyUid).ToList();
+            if (s.CurrentItem == studyUid) s.CurrentItem = s.InFlight.FirstOrDefault()?.StudyInstanceUid;
+        });
+    }
+
+    /// <summary>Scoped handle so a slot is always released, including on an exception.</summary>
+    private sealed class ActivitySlot : IDisposable
+    {
+        private readonly MigrationOrchestrator _o;
+        private readonly string _uid;
+        private int _lastCompleted;
+
+        public ActivitySlot(MigrationOrchestrator o, string uid) { _o = o; _uid = uid; }
+
+        public void Report(int completed, int remaining, int failed)
+        {
+            var delta = completed - _lastCompleted;
+            _lastCompleted = completed;
+            _o.UpdateActivity(_uid, completed, remaining, failed, delta);
+        }
+
+        public void Dispose() => _o.EndActivity(_uid);
+    }
+
+    private static string? LabelFor(StudyRecord s) =>
+        string.Join(" - ", new[] { s.PatientName, s.StudyDescription }
+            .Where(x => !string.IsNullOrWhiteSpace(x))) is { Length: > 0 } l ? l : null;
 
     // ---- Phase 1: Inventory ----------------------------------------------------------------
 
@@ -150,9 +237,30 @@ public sealed class MigrationOrchestrator
     {
         var settings = _settings.Current;
         await _repo.LogEventAsync(null, "info", $"Inventory started against {settings.Source.AeTitle}");
-        var studies = await _query.InventorySourceAsync(filter, ct);
 
-        UpdateState(s => s.Total = studies.Count);
+        var studies = await _query.InventorySourceAsync(filter, ct, (index, count, range, running) =>
+            UpdateState(s =>
+            {
+                s.ChunkIndex = index;
+                s.ChunkCount = count;
+                s.ChunkRange = range;
+                // Querying, not yet persisting: report the running find total so the operator sees
+                // the number climb instead of a static "0 of 0" for the whole query.
+                s.Processed = running;
+                s.Total = running;
+            }));
+
+        // The query phase used Processed/Total to show the find count climbing; reset both before
+        // the persist loop starts incrementing, or it would count on top of the query total.
+        UpdateState(s =>
+        {
+            s.Processed = 0;
+            s.Succeeded = 0;
+            s.Total = studies.Count;
+            s.ChunkIndex = 0;
+            s.ChunkCount = 0;
+            s.ChunkRange = null;
+        });
 
         foreach (var study in studies)
         {
@@ -297,10 +405,13 @@ public sealed class MigrationOrchestrator
     private async Task MoveOneAsync(StudyRecord study, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
-        UpdateState(s => s.CurrentItem = study.StudyInstanceUid);
+
+        var settings = _settings.Current;
+        using var slot = BeginActivity(study.StudyInstanceUid, LabelFor(study), "C-MOVE", settings.Destination);
 
         await _repo.SetStatusAsync(study.StudyInstanceUid, MigrationStatus.MovePending);
-        var result = await _move.MoveStudyAsync(study.StudyInstanceUid, ct);
+        var result = await _move.MoveStudyAsync(study.StudyInstanceUid, ct,
+            (completed, remaining, failed) => slot.Report(completed, remaining, failed));
 
         var status = result.Success ? MigrationStatus.Moved : MigrationStatus.MoveFailed;
         await _repo.RecordMoveAsync(study.StudyInstanceUid, status,
@@ -352,7 +463,8 @@ public sealed class MigrationOrchestrator
         foreach (var study in candidates)
         {
             ct.ThrowIfCancellationRequested();
-            UpdateState(s => s.CurrentItem = study.StudyInstanceUid);
+            using var slot = BeginActivity(study.StudyInstanceUid, LabelFor(study),
+                level == VerifyLevel.Instance ? "C-FIND IMAGE" : "C-FIND STUDY", settings.Destination);
 
             try
             {

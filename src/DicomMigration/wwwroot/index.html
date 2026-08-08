@@ -110,12 +110,17 @@
     </div>
   </section>
 
-  <section class="progress">
+  <section class="progress" id="activity">
     <div class="progress-head">
-      <span id="phase-label">idle</span>
+      <span id="phase-label" title="raw phase slug">idle</span>
       <span id="progress-text"></span>
     </div>
     <div class="progress-track"><div id="progress-fill"></div></div>
+    <!-- What is happening right now: the DIMSE operation, the AE it is issued to, and the study
+         it concerns. During a parallel migration there is one row per in-flight slot. -->
+    <div id="activity-rows" class="activity-rows"></div>
+    <!-- Derived: elapsed, throughput, ETA, instances transferred. -->
+    <div id="activity-derived" class="activity-derived"></div>
     <div id="current-item" class="current-item"></div>
     <!-- Phase-level outcome. Rendered unconditionally: it used to share a slot with the
          progress counter and was only shown when total was 0, so a phase that failed after

@@ -115,12 +115,18 @@ api.AddEndpointFilter(async (ctx, next) =>
     return await next(ctx);
 });
 
-api.MapGet("/status", async (MigrationOrchestrator orch, StudyRepository repo) => Results.Ok(new
+// Fast lane: in-memory orchestrator state only, no database work at all. The dashboard polls this
+// sub-second to show live activity, so it must not drag a GROUP BY over the studies table along
+// with it once per tab. If you ever add a repository dependency here, the poll rate has to drop.
+api.MapGet("/status", (MigrationOrchestrator orch) => Results.Ok(new
 {
     state = orch.State,
-    busy = orch.IsBusy,
-    counts = await repo.GetStatusCountsAsync()
+    busy = orch.IsBusy
 }));
+
+// Slow lane: the per-status tallies, which require a database scan. Polled on the existing 5s
+// interval alongside the study table.
+api.MapGet("/counts", async (StudyRepository repo) => Results.Ok(await repo.GetStatusCountsAsync()));
 
 api.MapGet("/config", (SettingsStore store) =>
 {

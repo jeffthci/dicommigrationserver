@@ -118,6 +118,18 @@ button.warn { border-color: var(--warn); color: var(--warn); }
   border-radius: 4px; margin: 0 0 14px 0;
 }
 
+/* Live activity: one row per in-flight DICOM operation. */
+.activity-rows { margin-top: 10px; display: flex; flex-direction: column; gap: 5px; }
+.act-row { font-size: 12px; color: var(--fg); display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+.act-op { font-weight: 600; color: var(--accent); font-size: 11px; letter-spacing: 0.04em; }
+.act-arrow { color: var(--muted); }
+.act-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--muted); }
+.act-who { color: var(--fg); }
+.act-fail { color: var(--err); }
+.act-stall { color: var(--warn); font-weight: 600; }
+.activity-derived { margin-top: 8px; font-size: 11px; color: var(--muted); }
+.progress.is-failed .progress-track { outline: 1px solid var(--err); }
+
 .phase-message { margin-top: 8px; font-size: 12px; color: var(--muted); }
 .phase-message.is-error { color: var(--err); font-weight: 600; }
 .phase-message.is-warn  { color: var(--warn); }
