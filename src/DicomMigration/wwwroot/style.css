@@ -118,6 +118,10 @@ button.warn { border-color: var(--warn); color: var(--warn); }
   border-radius: 4px; margin: 0 0 14px 0;
 }
 
+button.is-paused { border-color: var(--ok); color: var(--ok); }
+.chk { flex-direction: row !important; align-items: center; gap: 6px !important; font-size: 11px; color: var(--muted); }
+.chk input { width: auto; }
+
 /* Completion estimate. */
 .estimate {
   background: var(--panel); border: 1px solid var(--border); border-radius: 8px;

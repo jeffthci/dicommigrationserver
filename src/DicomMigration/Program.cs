@@ -255,6 +255,20 @@ api.MapPost("/cancel", (MigrationOrchestrator orch) =>
     return Results.Ok(new { cancelled = true });
 });
 
+// Pause lets in-flight studies finish and holds before the next one starts, unlike Cancel which
+// aborts mid-transfer and leaves a partial study on the destination.
+api.MapPost("/pause", (MigrationOrchestrator orch) =>
+{
+    orch.Pause();
+    return Results.Ok(new { paused = true });
+});
+
+api.MapPost("/resume", (MigrationOrchestrator orch) =>
+{
+    orch.Resume();
+    return Results.Ok(new { paused = false });
+});
+
 app.Run();
 
 // Start a phase via the orchestrator's atomic, synchronous gate acquisition.

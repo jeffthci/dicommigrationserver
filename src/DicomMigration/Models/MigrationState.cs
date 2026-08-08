@@ -34,6 +34,9 @@ public sealed class MigrationState
     public int Succeeded { get; set; }
     public int Failed { get; set; }
     public string? CurrentItem { get; set; }
+
+    /// <summary>Paused: in-flight studies are finishing, no new ones will start.</summary>
+    public bool Paused { get; set; }
     public string? Message { get; set; }
     public string? StartedAt { get; set; }
     public string? FinishedAt { get; set; }

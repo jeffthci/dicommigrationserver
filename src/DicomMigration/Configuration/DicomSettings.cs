@@ -46,6 +46,22 @@ public sealed class MoveSettings
 
     /// <summary>Optional pacing delay between studies to avoid overwhelming the source.</summary>
     public int DelayBetweenMovesMs { get; set; }
+
+    /// <summary>
+    /// Accept a C-MOVE that finished with failed sub-operations, PROVIDED every counted image
+    /// instance was delivered (Completed >= NumberOfStudyRelatedInstances).
+    ///
+    /// This exists for a known condition on the source archive: some Presentation State objects
+    /// were lost in a server data-loss incident, so the source cannot send them. The study still
+    /// contains a PR series in its index, so the C-MOVE reports one failed sub-operation and the
+    /// whole study is marked move_failed even though every diagnostic image arrived intact.
+    ///
+    /// The guard is the point: it accepts only what the source's own instance count says is
+    /// complete. A move that actually lost imaging has Completed &lt; instance count and still
+    /// fails. Accepted studies keep their failed sub-operation count and carry an explanatory
+    /// last_error, so this never silently hides a shortfall.
+    /// </summary>
+    public bool AcceptMissingNonImageObjects { get; set; }
 }
 
 public sealed class VerifySettings

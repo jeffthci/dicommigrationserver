@@ -5,12 +5,19 @@ using FellowOakDicom.Network.Client;
 namespace DicomMigration.Dicom;
 
 /// <summary>Outcome of a single study C-MOVE, parsed from the final response sub-operation counts.</summary>
+/// <param name="RanToCompletion">
+/// True when the source returned a final status meaning the move ran through every sub-operation,
+/// even if some of them failed (DICOM 0xB000 for C-MOVE: "Sub-operations Complete - One or more
+/// Failures"). Distinguishes that from a refused, aborted or timed-out association, where the
+/// counts say nothing about what the archive actually holds.
+/// </param>
 public sealed record MoveResult(
     bool Success,
     int Completed,
     int Failed,
     int Warnings,
-    string? Error)
+    string? Error,
+    bool RanToCompletion = false)
 {
     public static MoveResult Fail(string error) => new(false, 0, 0, 0, error);
 }
@@ -124,10 +131,22 @@ public sealed class DicomMoveService
         }
 
         var success = finalStatus?.State == DicomState.Success && failed == 0;
+
+        // A Warning final status means the move worked through every sub-operation and some of
+        // them failed -- distinct from a refusal or abort, where the counts prove nothing.
+        var ranToCompletion = finalStatus is not null &&
+            (finalStatus.State == DicomState.Success || finalStatus.State == DicomState.Warning);
+
+        // Do NOT use fo-dicom's status Description here. DICOM reuses code 0xB000: in a C-STORE
+        // context it is "Coercion of Data Elements", but for C-MOVE it means "Sub-operations
+        // Complete - One or more Failures". The lookup returns the C-STORE wording, which reported
+        // a coercion that never happened and hid the real meaning.
         var error = success
             ? null
-            : failureComment ?? $"status={finalStatus}, failed sub-operations={failed}";
+            : ranToCompletion
+                ? $"{failed} of {completed + failed} sub-operations failed (source could not send them); {completed} delivered"
+                : failureComment ?? $"C-MOVE did not complete: status={finalStatus}";
 
-        return new MoveResult(success, completed, failed, warnings, error);
+        return new MoveResult(success, completed, failed, warnings, error, ranToCompletion);
     }
 }

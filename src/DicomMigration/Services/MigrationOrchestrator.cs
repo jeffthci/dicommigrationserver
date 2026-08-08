@@ -60,6 +60,39 @@ public sealed class MigrationOrchestrator
         return true;
     }
 
+    /// <summary>
+    /// Pause is cooperative and deliberately different from Cancel: studies already in flight run
+    /// to completion, and only the START of the next study is held. Aborting a C-MOVE mid-transfer
+    /// leaves a partial study on the destination and costs the work already done, so "let it
+    /// finish and wait" is the safe way to stop a long migration.
+    /// </summary>
+    private volatile bool _paused;
+
+    public bool IsPaused => _paused;
+    public void Pause() => _paused = true;
+    public void Resume() => _paused = false;
+
+    /// <summary>
+    /// Blocks while paused. Called before starting each study, never mid-transfer. Cancellation
+    /// still wins, so a paused phase can be cancelled without resuming it first.
+    /// </summary>
+    private async Task WaitWhilePausedAsync(CancellationToken ct)
+    {
+        if (!_paused) return;
+
+        _logger.LogInformation("Paused; holding before the next study");
+        UpdateState(s => s.Paused = true);
+
+        while (_paused)
+        {
+            ct.ThrowIfCancellationRequested();
+            await Task.Delay(500, ct);
+        }
+
+        UpdateState(s => s.Paused = false);
+        _logger.LogInformation("Resumed");
+    }
+
     public void Cancel()
     {
         CancellationTokenSource? cts;
@@ -88,6 +121,9 @@ public sealed class MigrationOrchestrator
     {
         if (!_gate.Wait(0))
             return false;
+
+        // Clear any pause left over from a previous run, so a new phase cannot start frozen.
+        _paused = false;
 
         var cts = new CancellationTokenSource();
         lock (_stateLock)
@@ -391,6 +427,8 @@ public sealed class MigrationOrchestrator
             await throttle.WaitAsync(ct);
             try
             {
+                // Held here, before the study starts -- never mid-transfer.
+                await WaitWhilePausedAsync(ct);
                 await MoveOneAsync(study, ct);
             }
             finally
@@ -429,22 +467,60 @@ public sealed class MigrationOrchestrator
         }
         sw.Stop();
 
-        var status = result.Success ? MigrationStatus.Moved : MigrationStatus.MoveFailed;
-        // Only time successful moves: a fast rejection would otherwise look like blazing throughput.
-        await _repo.RecordMoveAsync(study.StudyInstanceUid, status,
-            result.Completed, result.Failed, result.Warnings, result.Error,
-            result.Success ? sw.ElapsedMilliseconds : null);
+        // Accept a partially-failed move only when the source's own instance count says every
+        // image arrived. The source archive is known to have lost some Presentation State objects,
+        // so those studies report a failed sub-operation for an object that no longer exists while
+        // all the diagnostic imaging transfers intact.
+        //
+        // The counts are the safety guard: a move that genuinely lost imaging has
+        // Completed < SourceInstanceCount and still fails. A refused or aborted association never
+        // qualifies, because RanToCompletion is false and its counts prove nothing.
+        var imagesComplete = study.SourceInstanceCount is int expected
+            && expected > 0
+            && result.Completed >= expected;
 
+        var acceptedPartial = !result.Success
+            && settings.Move.AcceptMissingNonImageObjects
+            && result.RanToCompletion
+            && imagesComplete;
+
+        var accepted = result.Success || acceptedPartial;
+        var status = accepted ? MigrationStatus.Moved : MigrationStatus.MoveFailed;
+
+        // Keep the shortfall visible even when accepted: recorded on the study and in the event
+        // log, so "we chose to accept this" is never indistinguishable from "nothing went wrong".
+        var error = acceptedPartial
+            ? $"Accepted: all {result.Completed} image instances delivered; " +
+              $"{result.Failed} non-image object(s) missing at source"
+            : result.Error;
+
+        // Only time moves that delivered everything: a fast rejection would otherwise look like
+        // blazing throughput.
+        await _repo.RecordMoveAsync(study.StudyInstanceUid, status,
+            result.Completed, result.Failed, result.Warnings, error,
+            accepted ? sw.ElapsedMilliseconds : null);
+
+        if (acceptedPartial)
+        {
+            _logger.LogWarning(
+                "Study {Uid} accepted with {Failed} missing non-image object(s); {Completed} of {Expected} image instances delivered",
+                study.StudyInstanceUid, result.Failed, result.Completed, study.SourceInstanceCount);
+        }
+
+        // "warn" for an accepted-partial: it counts as progress, but it is not the same event as a
+        // clean move and should not read like one in the operator's log.
         await _repo.LogEventAsync(study.StudyInstanceUid,
-            result.Success ? "info" : "error",
-            result.Success
-                ? $"Moved: {result.Completed} instances"
-                : $"Move failed: {result.Error}");
+            accepted ? (acceptedPartial ? "warn" : "info") : "error",
+            accepted
+                ? (acceptedPartial
+                    ? $"Moved with {result.Failed} missing non-image object(s): {result.Completed} image instances delivered"
+                    : $"Moved: {result.Completed} instances")
+                : $"Move failed: {error}");
 
         UpdateState(s =>
         {
             s.Processed++;
-            if (result.Success) s.Succeeded++; else s.Failed++;
+            if (accepted) s.Succeeded++; else s.Failed++;
         });
 
         // Throttle: read the delay live so the pace can be tuned mid-migration.

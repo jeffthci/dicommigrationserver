@@ -37,7 +37,8 @@ public sealed class SettingsStore
     };
     private static readonly HashSet<string> BoolKeys = new(StringComparer.OrdinalIgnoreCase)
     {
-        "Source.UseTls", "Destination.UseTls", "Inventory.FetchSeriesCounts"
+        "Source.UseTls", "Destination.UseTls", "Inventory.FetchSeriesCounts",
+        "Move.AcceptMissingNonImageObjects"
     };
     private static readonly HashSet<string> PortKeys = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -75,6 +76,7 @@ public sealed class SettingsStore
         ["Move.MoveTimeoutMinutes"] = s.Move.MoveTimeoutMinutes.ToString(),
         ["Move.MaxAttempts"] = s.Move.MaxAttempts.ToString(),
         ["Move.DelayBetweenMovesMs"] = s.Move.DelayBetweenMovesMs.ToString(),
+        ["Move.AcceptMissingNonImageObjects"] = s.Move.AcceptMissingNonImageObjects.ToString(),
         ["Verify.Level"] = s.Verify.Level,
         ["Inventory.FetchSeriesCounts"] = s.Inventory.FetchSeriesCounts.ToString(),
         ["Inventory.ChunkDays"] = s.Inventory.ChunkDays.ToString(),
@@ -166,7 +168,8 @@ public sealed class SettingsStore
                     AssociationTimeoutSeconds = GetInt("Move.AssociationTimeoutSeconds", d.Move.AssociationTimeoutSeconds),
                     MoveTimeoutMinutes = GetInt("Move.MoveTimeoutMinutes", d.Move.MoveTimeoutMinutes),
                     MaxAttempts = GetInt("Move.MaxAttempts", d.Move.MaxAttempts),
-                    DelayBetweenMovesMs = Math.Max(0, GetInt("Move.DelayBetweenMovesMs", d.Move.DelayBetweenMovesMs))
+                    DelayBetweenMovesMs = Math.Max(0, GetInt("Move.DelayBetweenMovesMs", d.Move.DelayBetweenMovesMs)),
+                    AcceptMissingNonImageObjects = GetBool("Move.AcceptMissingNonImageObjects", d.Move.AcceptMissingNonImageObjects)
                 },
                 Verify = new VerifySettings { Level = GetString("Verify.Level", d.Verify.Level) },
                 Inventory = new InventorySettings

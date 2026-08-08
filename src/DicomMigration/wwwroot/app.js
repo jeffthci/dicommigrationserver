@@ -170,8 +170,12 @@ async function refreshStatus() {
   $("#t-save").disabled = data.busy || !settingsLoaded;
   document.querySelectorAll(".push-btn, .verify-btn").forEach((b) => { b.disabled = data.busy; });
 
-  // Cancel is the inverse: only meaningful while something is running.
+  // Cancel and Pause are the inverse: only meaningful while something is running.
   $("#btn-cancel").disabled = !data.busy;
+  const pause = $("#btn-pause");
+  pause.disabled = !data.busy;
+  pause.textContent = s.paused ? "Resume" : "Pause";
+  pause.classList.toggle("is-paused", !!s.paused);
 
 }
 
@@ -542,6 +546,7 @@ async function loadSettings() {
     $("#t-parallel").value = Math.min(Math.max(s.move.maxParallelMoves, 1), 16);
     $("#t-delay").value = s.move.delayBetweenMovesMs;
     $("#t-verify").value = s.verify.level;
+    $("#t-acceptpartial").checked = !!s.move.acceptMissingNonImageObjects;
     $("#t-chunk").value = s.inventory.chunkDays;
     $("#t-chunkdelay").value = s.inventory.delayBetweenChunksMs;
 
@@ -619,6 +624,7 @@ async function saveSettings() {
     "Move.MaxParallelMoves": String($("#t-parallel").value || "1"),
     "Move.DelayBetweenMovesMs": String($("#t-delay").value || "0"),
     "Verify.Level": $("#t-verify").value,
+    "Move.AcceptMissingNonImageObjects": String($("#t-acceptpartial").checked),
     "Inventory.ChunkDays": String($("#t-chunk").value || "0"),
     "Inventory.DelayBetweenChunksMs": String($("#t-chunkdelay").value || "0"),
   };
@@ -633,6 +639,20 @@ async function saveSettings() {
 }
 
 // ms = 0 keeps the message up (used for states the operator must not miss, like a failed load).
+// Pause holds before the NEXT study starts; studies already transferring run to completion.
+// No confirmation: it is non-destructive and instantly reversible, unlike Cancel.
+async function togglePause() {
+  const btn = $("#btn-pause");
+  const resuming = btn.textContent === "Resume";
+  btn.disabled = true;
+  try {
+    await api(resuming ? "/resume" : "/pause", { method: "POST" });
+  } catch (e) {
+    alert((resuming ? "Resume" : "Pause") + " failed: " + e.message);
+  }
+  refreshStatus();
+}
+
 // Cancel aborts a running phase. Previously it fired and forgot: the promise was never awaited
 // and had no catch, so a failure surfaced only as an unhandled rejection in devtools.
 async function cancelPhase() {
@@ -659,6 +679,7 @@ function flashSaved(msg, sel, ms) {
 document.querySelectorAll(".phase-bar button[data-phase]").forEach((b) =>
   b.addEventListener("click", () => postPhase(b.dataset.phase)));
 $("#btn-cancel").addEventListener("click", cancelPhase);
+$("#btn-pause").addEventListener("click", togglePause);
 $("#refresh").addEventListener("click", () => { lastStudiesKey = null; refreshStudies(); refreshEvents(); });
 // Reset to the first page when the filter changes, or the view can land past the end of a
 // smaller result set and show nothing.
