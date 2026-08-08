@@ -118,6 +118,18 @@ button.warn { border-color: var(--warn); color: var(--warn); }
   border-radius: 4px; margin: 0 0 14px 0;
 }
 
+/* Completion estimate. */
+.estimate {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  padding: 12px 14px; margin-bottom: 14px;
+}
+.estimate-head { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin-bottom: 10px; }
+.estimate-grid { display: flex; flex-wrap: wrap; gap: 22px; }
+.est-cell { min-width: 110px; }
+.est-k { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+.est-v { font-size: 15px; font-weight: 600; margin-top: 2px; }
+.estimate-note { margin-top: 10px; font-size: 11px; color: var(--muted); line-height: 1.5; }
+
 /* Live activity: one row per in-flight DICOM operation. */
 .activity-rows { margin-top: 10px; display: flex; flex-direction: column; gap: 5px; }
 .act-row { font-size: 12px; color: var(--fg); display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }

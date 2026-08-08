@@ -47,6 +47,24 @@ public sealed class Database
     {
         using var conn = Open();
         conn.Execute(Schema);
+        AddMissingColumns(conn);
+    }
+
+    /// <summary>
+    /// Adds columns introduced after a database was first created. CREATE TABLE IF NOT EXISTS is a
+    /// no-op on an existing table, so new columns would silently never appear on an upgraded
+    /// install -- and the code reading them would fail at runtime rather than at deploy.
+    /// SQLite has no "ADD COLUMN IF NOT EXISTS", so check the table info first.
+    /// </summary>
+    private static void AddMissingColumns(SqliteConnection conn)
+    {
+        var existing = conn.Query<string>("SELECT name FROM pragma_table_info('studies');")
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        // Wall-clock milliseconds the C-MOVE took. Persisted so throughput and the completion
+        // estimate survive a restart instead of being re-learned from scratch each run.
+        if (!existing.Contains("move_ms"))
+            conn.Execute("ALTER TABLE studies ADD COLUMN move_ms INTEGER;");
     }
 
     private const string Schema = @"

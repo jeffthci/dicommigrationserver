@@ -410,12 +410,17 @@ public sealed class MigrationOrchestrator
         using var slot = BeginActivity(study.StudyInstanceUid, LabelFor(study), "C-MOVE", settings.Destination);
 
         await _repo.SetStatusAsync(study.StudyInstanceUid, MigrationStatus.MovePending);
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         var result = await _move.MoveStudyAsync(study.StudyInstanceUid, ct,
             (completed, remaining, failed) => slot.Report(completed, remaining, failed));
+        sw.Stop();
 
         var status = result.Success ? MigrationStatus.Moved : MigrationStatus.MoveFailed;
+        // Only time successful moves: a fast rejection would otherwise look like blazing throughput.
         await _repo.RecordMoveAsync(study.StudyInstanceUid, status,
-            result.Completed, result.Failed, result.Warnings, result.Error);
+            result.Completed, result.Failed, result.Warnings, result.Error,
+            result.Success ? sw.ElapsedMilliseconds : null);
 
         await _repo.LogEventAsync(study.StudyInstanceUid,
             result.Success ? "info" : "error",

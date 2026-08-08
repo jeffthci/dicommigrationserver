@@ -128,6 +128,26 @@ api.MapGet("/status", (MigrationOrchestrator orch) => Results.Ok(new
 // interval alongside the study table.
 api.MapGet("/counts", async (StudyRepository repo) => Results.Ok(await repo.GetStatusCountsAsync()));
 
+// Completion estimate, derived from measured throughput of moves that actually succeeded.
+api.MapGet("/estimate", async (StudyRepository repo) =>
+{
+    var e = await repo.GetEstimateAsync();
+    return Results.Ok(new
+    {
+        movedStudies = e.MovedStudies,
+        movedInstances = e.MovedInstances,
+        movedMs = e.MovedMs,
+        pendingStudies = e.PendingStudies,
+        pendingInstances = e.PendingInstances,
+        pendingUnknownInstances = e.PendingUnknownInstances,
+        projectedPendingInstances = e.ProjectedPendingInstances,
+        instancesPerSecond = e.InstancesPerSecond,
+        averageInstancesPerStudy = e.AverageInstancesPerStudy,
+        secondsRemaining = e.SecondsRemaining,
+        confidence = e.Confidence
+    });
+});
+
 api.MapGet("/config", (SettingsStore store) =>
 {
     var s = store.Current;

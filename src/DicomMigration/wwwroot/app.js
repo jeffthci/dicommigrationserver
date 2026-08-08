@@ -236,6 +236,58 @@ function isStalled(o) {
   return isFinite(t) && Date.now() - t > STALL_MS;
 }
 
+// Completion estimate. Deliberately shows the measurements behind the number, not just an ETA:
+// a bare "12 days" with no visible basis invites either false confidence or dismissal.
+async function refreshEstimate() {
+  let e;
+  try { e = await api("/estimate"); } catch { return; }
+
+  const sec = $("#estimate");
+  if (!e || e.pendingStudies === 0) { sec.hidden = true; return; }
+  sec.hidden = false;
+
+  const cells = [];
+  cells.push(["Remaining", `${fmtCount(e.pendingStudies)} studies`]);
+  cells.push(["", `${fmtCount(e.projectedPendingInstances)} instances`]);
+
+  if (e.instancesPerSecond) {
+    cells.push(["Throughput", `${e.instancesPerSecond.toFixed(1)} instances/sec`]);
+    cells.push(["Time left", fmtLongDuration(e.secondsRemaining * 1000)]);
+    const done = new Date(Date.now() + e.secondsRemaining * 1000);
+    cells.push(["Est. finish", done.toLocaleString()]);
+  } else {
+    cells.push(["Throughput", "not measured yet"]);
+    cells.push(["Time left", "run a migration to measure"]);
+  }
+
+  $("#estimate-grid").innerHTML = cells
+    .map(([k, v]) => `<div class="est-cell"><div class="est-k">${esc(k)}</div><div class="est-v">${esc(v)}</div></div>`)
+    .join("");
+
+  // State the basis, including the parts that make the number a floor rather than a promise.
+  const notes = [];
+  if (e.movedStudies > 0) {
+    notes.push(`based on ${fmtCount(e.movedStudies)} timed move${e.movedStudies === 1 ? "" : "s"} ` +
+               `(${fmtCount(e.movedInstances)} instances in ${fmtLongDuration(e.movedMs)}) — ${e.confidence}`);
+  }
+  if (e.pendingUnknownInstances > 0) {
+    notes.push(`${fmtCount(e.pendingUnknownInstances)} studies have no instance count from the source; ` +
+               `priced at the observed average of ${(e.averageInstancesPerStudy || 0).toFixed(0)}`);
+  }
+  notes.push("assumes continuous transfer at the current parallelism");
+  $("#estimate-note").textContent = notes.join(" · ");
+}
+
+// Days matter here: a multi-day migration rendered as "287h 14m" is unreadable.
+function fmtLongDuration(ms) {
+  if (!isFinite(ms) || ms < 0) return "-";
+  const s = Math.floor(ms / 1000);
+  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return fmtDuration(ms);
+}
+
 // Counts come from the slow lane now: /api/status is deliberately database-free so it can be
 // polled sub-second without dragging a GROUP BY over the studies table along with it.
 async function refreshCounts() {
@@ -629,6 +681,7 @@ loadConfig();
 loadSettings();
 refreshStatus();
 refreshCounts();
+refreshEstimate();
 refreshStudies();
 refreshEvents();
 
@@ -636,5 +689,7 @@ refreshEvents();
 setInterval(refreshStatus, 600);
 // Slow lane: everything that touches SQLite.
 setInterval(() => { refreshCounts(); refreshStudies(); refreshEvents(); }, 5000);
+// The estimate only moves when a study finishes, so it does not need the 5s lane.
+setInterval(refreshEstimate, 15000);
 // Elapsed/ETA tick independently of the poll so the clock does not appear to stutter.
 setInterval(() => { if (isBusy && lastState) renderActivity(lastState); }, 1000);

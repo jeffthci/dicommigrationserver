@@ -96,7 +96,7 @@ public sealed class StudyRepository
             new { studyUid, status, error, now = Now() });
     }
 
-    public async Task RecordMoveAsync(string studyUid, string status, int completed, int failed, int warnings, string? error)
+    public async Task RecordMoveAsync(string studyUid, string status, int completed, int failed, int warnings, string? error, long? moveMs = null)
     {
         using var conn = _db.Open();
         await conn.ExecuteAsync(
@@ -107,10 +107,42 @@ public sealed class StudyRepository
                 move_warnings     = @warnings,
                 last_error        = @error,
                 attempts          = attempts + 1,
+                move_ms           = COALESCE(@moveMs, move_ms),
                 moved_at          = @now,
                 updated_at        = @now
               WHERE study_instance_uid = @studyUid;",
-            new { studyUid, status, completed, failed, warnings, error, now = Now() });
+            new { studyUid, status, completed, failed, warnings, error, moveMs, now = Now() });
+    }
+
+    /// <summary>
+    /// Throughput and remaining work, for the completion estimate.
+    ///
+    /// Rate is measured in INSTANCES per second, not studies per minute: study sizes in this
+    /// archive span 1 to over 1,100 instances, so a studies-based estimate is dominated by
+    /// whichever sizes happen to come first and is wildly wrong either way. Only successful moves
+    /// with a recorded duration contribute, so a fast failure cannot inflate the rate.
+    /// </summary>
+    public async Task<MigrationEstimate> GetEstimateAsync()
+    {
+        using var conn = _db.Open();
+
+        var done = await conn.QuerySingleAsync<(int Studies, long Instances, long Ms)>(
+            @"SELECT COUNT(*)                              AS Studies,
+                     COALESCE(SUM(move_completed), 0)      AS Instances,
+                     COALESCE(SUM(move_ms), 0)             AS Ms
+              FROM studies
+              WHERE move_ms IS NOT NULL AND move_ms > 0 AND move_completed > 0;");
+
+        var pending = await conn.QuerySingleAsync<(int Studies, long Instances, int Unknown)>(
+            @"SELECT COUNT(*)                                        AS Studies,
+                     COALESCE(SUM(source_instance_count), 0)         AS Instances,
+                     SUM(CASE WHEN source_instance_count IS NULL THEN 1 ELSE 0 END) AS Unknown
+              FROM studies
+              WHERE status IN ('inventoried', 'move_failed');");
+
+        return new MigrationEstimate(
+            done.Studies, done.Instances, done.Ms,
+            pending.Studies, pending.Instances, pending.Unknown);
     }
 
     public async Task RecordVerifyAsync(string studyUid, string status, int? destSeries, int? destInstances, string? error)
