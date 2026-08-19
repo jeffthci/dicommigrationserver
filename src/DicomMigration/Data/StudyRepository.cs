@@ -227,9 +227,15 @@ public sealed class StudyRepository
                 tx.Commit();
             }
 
-            // Outside the transaction: VACUUM cannot run inside one. Reclaims the space a large
-            // inventory occupied instead of leaving a multi-hundred-MB file of free pages.
+            // Outside the transaction: VACUUM cannot run inside one.
+            //
+            // The checkpoint is what actually shrinks the file. In WAL mode VACUUM rebuilds the
+            // database into the write-ahead log, and the main .db keeps its old size until a
+            // checkpoint copies those pages back and truncates it. Without this the file stayed
+            // at 12 MB after a reset that left only 9 pages of real data -- logically empty,
+            // visibly not reclaimed.
             await conn.ExecuteAsync("VACUUM;");
+            await conn.ExecuteAsync("PRAGMA wal_checkpoint(TRUNCATE);");
         }
 
         await LogEventAsync(null, "warn",
