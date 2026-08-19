@@ -206,3 +206,13 @@ td.uid { font-family: monospace; }
 .events .lvl-error { color: var(--err); }
 .events .lvl-warn { color: var(--warn); }
 .events .ts { color: var(--muted); margin-right: 8px; }
+
+/* Destructive actions, kept at the bottom and visually separated from routine controls. */
+.danger-zone {
+  border: 1px solid var(--err); border-radius: 8px; padding: 12px 14px;
+  margin: 20px 0 8px 0; background: var(--panel);
+}
+.danger-head { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--err); margin-bottom: 8px; }
+.danger-body { font-size: 12px; color: var(--muted); line-height: 1.5; max-width: 70ch; }
+.danger-body code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+.danger-actions { display: flex; gap: 12px; align-items: center; margin-top: 12px; }

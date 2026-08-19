@@ -178,6 +178,20 @@
     <h2>Recent events</h2>
     <ul id="event-list"></ul>
   </section>
+  <!-- Destructive: clears the inventory and history so a new migration can start. -->
+  <section class="danger-zone">
+    <div class="danger-head">Start a new migration</div>
+    <div class="danger-body">
+      Clears the study inventory and event history so this server can migrate a different
+      system. A timestamped backup is written to <code>data/archive/</code> first, and the
+      connection and throttle settings are kept.
+    </div>
+    <div class="danger-actions">
+      <button id="btn-reset" class="danger">Clear migration database</button>
+      <span id="reset-msg" class="saved-msg"></span>
+    </div>
+  </section>
+
 
   <script src="app.js"></script>
 </body>

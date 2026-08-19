@@ -194,6 +194,46 @@ public sealed class StudyRepository
             new { failed = MigrationStatus.MoveFailed, pending = MigrationStatus.MovePending, now = Now() });
     }
 
+    /// <summary>
+    /// Clears the inventory and history so a new migration can start, and returns the path of the
+    /// backup taken first.
+    ///
+    /// Deliberately keeps the settings table: the AE configuration, throttle and verify level are
+    /// how this deployment is set up, not part of any one migration run. Point it at a new source
+    /// or destination from the Connections panel afterwards.
+    ///
+    /// A backup is taken before anything is deleted. This wipes the only record of which studies
+    /// were migrated and verified -- if a question comes up later about a completed migration, that
+    /// file is the answer -- so it is copied rather than trusted to a click.
+    /// </summary>
+    public async Task<string> ResetAsync()
+    {
+        var backupPath = _db.BackupTo(Path.Combine(
+            Path.GetDirectoryName(_db.FilePath)!, "archive"));
+
+        using (var conn = _db.Open())
+        {
+            using (var tx = conn.BeginTransaction())
+            {
+                await conn.ExecuteAsync("DELETE FROM studies;", transaction: tx);
+                await conn.ExecuteAsync("DELETE FROM event_log;", transaction: tx);
+                // event_log ids restart from 1 rather than continuing from the old run.
+                await conn.ExecuteAsync(
+                    "DELETE FROM sqlite_sequence WHERE name = event_log;", transaction: tx);
+                tx.Commit();
+            }
+
+            // Outside the transaction: VACUUM cannot run inside one. Reclaims the space a large
+            // inventory occupied instead of leaving a multi-hundred-MB file of free pages.
+            await conn.ExecuteAsync("VACUUM;");
+        }
+
+        await LogEventAsync(null, "warn",
+            $"Migration database cleared for a new run; previous data backed up to {Path.GetFileName(backupPath)}");
+
+        return backupPath;
+    }
+
     public async Task LogEventAsync(string? studyUid, string level, string message)
     {
         using var conn = _db.Open();

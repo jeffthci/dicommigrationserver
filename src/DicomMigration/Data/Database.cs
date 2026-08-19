@@ -11,6 +11,9 @@ public sealed class Database
 {
     private readonly string _connectionString;
 
+    /// <summary>Absolute path to the SQLite file, so it can be backed up before a reset.</summary>
+    public string FilePath { get; }
+
     public Database(IConfiguration config, ILogger<Database> logger)
     {
         var path = config["Database:Path"] ?? "data/migration.db";
@@ -29,6 +32,8 @@ public sealed class Database
             Cache = SqliteCacheMode.Shared
         }.ToString();
 
+        FilePath = fullPath;
+
         // Dapper maps source_instance_count -> SourceInstanceCount, etc.
         DefaultTypeMap.MatchNamesWithUnderscores = true;
 
@@ -41,6 +46,26 @@ public sealed class Database
         conn.Open();
         conn.Execute("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;");
         return conn;
+    }
+
+    /// <summary>
+    /// Copies the database to a timestamped file in the archive directory and returns its path.
+    /// Uses SQLite VACUUM INTO rather than a file copy: the database is in WAL mode and open, so
+    /// copying the .db file alone could miss committed pages still sitting in the -wal file.
+    /// VACUUM INTO produces a consistent, self-contained snapshot of the live database.
+    /// </summary>
+    public string BackupTo(string archiveDir)
+    {
+        Directory.CreateDirectory(archiveDir);
+
+        var stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
+        var target = Path.Combine(archiveDir, "migration-" + stamp + ".db");
+
+        using var conn = Open();
+        // VACUUM INTO does not accept a parameter; the path is server-generated, never user input.
+        conn.Execute("VACUUM INTO '" + target.Replace("'", "''") + "';");
+
+        return target;
     }
 
     public void Initialize()

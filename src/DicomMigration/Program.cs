@@ -217,6 +217,25 @@ api.MapPost("/test-connection", async (
 
 // limit/offset are clamped: SQLite treats a negative LIMIT as "no limit", so an unclamped
 // caller could pull the entire PHI-bearing inventory in one response.
+// Clear the inventory and history so a new migration can start against a different system.
+// Guarded three ways, because this destroys the only record of what was migrated and verified:
+//  - refused while a phase is running, so it cannot race an in-flight C-MOVE
+//  - requires an exact typed confirmation, not just a POST
+//  - takes a consistent backup first and returns where it went
+api.MapPost("/reset", async (MigrationOrchestrator orch, StudyRepository repo, ResetRequest req, ILoggerFactory lf) =>
+{
+    if (orch.IsBusy)
+        return Results.Conflict(new { error = "A phase is running. Cancel it before clearing the database." });
+
+    if (!string.Equals(req.Confirm, "CLEAR", StringComparison.Ordinal))
+        return Results.BadRequest(new { error = "Confirmation required: send {\"confirm\":\"CLEAR\"}." });
+
+    var backup = await repo.ResetAsync();
+    lf.CreateLogger("Reset").LogWarning("Migration database cleared; backup written to {Backup}", backup);
+
+    return Results.Ok(new { cleared = true, backup = Path.GetFileName(backup), backupPath = backup });
+});
+
 api.MapGet("/studies", async (StudyRepository repo, string? status, int? limit, int? offset) =>
     Results.Ok(await repo.GetPageAsync(status, Clamp(limit, 100, 1000), Math.Max(0, offset ?? 0))));
 

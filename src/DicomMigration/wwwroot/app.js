@@ -653,6 +653,42 @@ async function togglePause() {
   refreshStatus();
 }
 
+// Clears the inventory so a new migration can start. Two-step on purpose: this destroys the
+// only record of which studies were migrated and verified, and a stray click on a button
+// labelled "clear" should not be able to do that. The typed word also makes the confirm text
+// worth reading, which a plain OK/Cancel dialog is not.
+async function resetDatabase() {
+  const total = Object.values(lastCounts).reduce((a, b) => a + b, 0);
+  const typed = prompt(
+    "This clears the inventory and history for " + fmtCount(total) + " studies so a new " +
+    "migration can start." + "\n" + "\n" +
+    "A backup is written to data/archive/ first, and connection settings are kept." + "\n" + "\n" +
+    "Type CLEAR to confirm:");
+  if (typed === null) return;
+
+  const btn = $("#btn-reset");
+  btn.disabled = true;
+  try {
+    const r = await api("/reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: typed.trim() }),
+    });
+    if (r && r.error) {
+      flashSaved(r.error, "#reset-msg", 8000);
+    } else {
+      flashSaved("Cleared. Backup: " + r.backup, "#reset-msg", 0);
+      // Everything on screen is now stale; force a full repaint rather than waiting a poll.
+      lastStudiesKey = null; lastEventsKey = null; lastRev = -1; pageOffset = 0;
+      refreshStatus(); refreshCounts(); refreshEstimate(); refreshStudies(); refreshEvents();
+    }
+  } catch (e) {
+    flashSaved("Error: " + e.message, "#reset-msg", 8000);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 // Cancel aborts a running phase. Previously it fired and forgot: the promise was never awaited
 // and had no catch, so a failure surfaced only as an unhandled rejection in devtools.
 async function cancelPhase() {
@@ -680,6 +716,7 @@ document.querySelectorAll(".phase-bar button[data-phase]").forEach((b) =>
   b.addEventListener("click", () => postPhase(b.dataset.phase)));
 $("#btn-cancel").addEventListener("click", cancelPhase);
 $("#btn-pause").addEventListener("click", togglePause);
+$("#btn-reset").addEventListener("click", resetDatabase);
 $("#refresh").addEventListener("click", () => { lastStudiesKey = null; refreshStudies(); refreshEvents(); });
 // Reset to the first page when the filter changes, or the view can land past the end of a
 // smaller result set and show nothing.

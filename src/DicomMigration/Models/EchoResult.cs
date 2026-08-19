@@ -23,3 +23,6 @@ public sealed record TestConnectionRequest(string? Target, string? AeTitle, stri
 
 /// <summary>Body for POST /api/move-study — pushes one inventoried study on demand.</summary>
 public sealed record MoveStudyRequest(string? StudyInstanceUid);
+
+/// <summary>Body for POST /api/reset. Requires the literal string "CLEAR" to proceed.</summary>
+public sealed record ResetRequest(string? Confirm);
