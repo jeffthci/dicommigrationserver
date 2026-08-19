@@ -11,6 +11,10 @@ async function api(path, opts) {
     const txt = await res.text();
     let msg = txt;
     try { const j = JSON.parse(txt); if (j && j.error) msg = j.error; } catch { /* not JSON */ }
+    // An empty body (a 500 with no content) produced a bare "Error:" with nothing after it,
+    // which told the operator only that something went wrong. Always say something.
+    if (!msg) msg = "HTTP " + res.status + (res.statusText ? " " + res.statusText : "") +
+                    " (see the service log for details)";
     throw new Error(msg);
   }
   return res.status === 204 ? null : res.json();

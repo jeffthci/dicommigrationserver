@@ -218,8 +218,12 @@ public sealed class StudyRepository
                 await conn.ExecuteAsync("DELETE FROM studies;", transaction: tx);
                 await conn.ExecuteAsync("DELETE FROM event_log;", transaction: tx);
                 // event_log ids restart from 1 rather than continuing from the old run.
+                // Parameterised, not a quoted literal: an unquoted identifier here made SQLite
+                // read event_log as a COLUMN name and the whole reset failed with
+                // "no such column: event_log".
                 await conn.ExecuteAsync(
-                    "DELETE FROM sqlite_sequence WHERE name = event_log;", transaction: tx);
+                    "DELETE FROM sqlite_sequence WHERE name = @name;",
+                    new { name = "event_log" }, transaction: tx);
                 tx.Commit();
             }
 

@@ -58,12 +58,26 @@ public sealed class Database
     {
         Directory.CreateDirectory(archiveDir);
 
+        // The snapshot is a full copy of the inventory: patient names, IDs, accession numbers.
+        // Directory.CreateDirectory uses the default umask, which left it world-readable, so
+        // restrict both the directory and the file to the service account.
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(archiveDir,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+
         var stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
         var target = Path.Combine(archiveDir, "migration-" + stamp + ".db");
 
-        using var conn = Open();
-        // VACUUM INTO does not accept a parameter; the path is server-generated, never user input.
-        conn.Execute("VACUUM INTO '" + target.Replace("'", "''") + "';");
+        using (var conn = Open())
+        {
+            // VACUUM INTO does not accept a parameter; the path is server-generated, never user input.
+            conn.Execute("VACUUM INTO '" + target.Replace("'", "''") + "';");
+        }
+
+        if (!OperatingSystem.IsWindows() && File.Exists(target))
+            File.SetUnixFileMode(target, UnixFileMode.UserRead | UnixFileMode.UserWrite);
 
         return target;
     }
