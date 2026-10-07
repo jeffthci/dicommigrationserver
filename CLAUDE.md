@@ -1,5 +1,15 @@
 # dicom-migration-server — Claude Code context
 
+## Workspace memory
+
+All THCI project knowledge lives in the **workspace-memory** repo (`jeffthci/workspace-memory`; Windows
+`C:\Users\jbrady\Documents\GitHub\workspace-memory`, Linux box `/srv/projects/workspace-memory`). This project's knowledge
+file there is **`projects/dicom-migration-server.md`**.
+- Read it, and workspace-memory's `CLAUDE.md`, at the start of a session (clone the repo next to this one if it is missing).
+- Update it in the same step as every meaningful change here (a deploy, a host or URL, a decision, a feature, an open issue),
+  then commit and push both repos (fetch and rebase first).
+- Keep this repo's `handover.md` current during the session. No secrets, no PHI.
+
 This file is auto-loaded for Claude Code sessions in this repo. Cross-project
 context (company info, glossary, project index) is auto-loaded from
 `../workspace-memory/` via the parent `GitHub/CLAUDE.md`, so it is not repeated
